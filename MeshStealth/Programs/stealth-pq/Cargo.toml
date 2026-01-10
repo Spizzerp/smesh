@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "programs/*"
+]
+resolver = "2"
+
+# Patch constant_time_eq to git version that doesn't require edition2024
+[patch.crates-io]
+constant_time_eq = { git = "https://github.com/cesarb/constant_time_eq", tag = "0.3.1" }
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+[profile.release.build-override]
+opt-level = 3
+incremental = false
+codegen-units = 1

@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 
 /// Represents a detected stealth payment addressed to us
-public struct DetectedStealthPayment: Identifiable, Codable, Equatable {
+public struct DetectedStealthPayment: Identifiable, Codable, Equatable, Sendable {
     /// Unique identifier
     public let id: UUID
 
