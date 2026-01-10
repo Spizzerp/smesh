@@ -57,30 +57,54 @@ Meta-address: Base58(M || V) = 64 bytes encoded
    - This key can sign transactions from stealth address
 ```
 
-### Post-Quantum Option (Module-LWE SAP / Kyber)
+### Post-Quantum Option (Hybrid Classical + ML-KEM)
 
-For quantum resistance, we implement Module-LWE Stealth Address Protocol:
-- Key encapsulation: ML-KEM (Kyber-768 or Kyber-1024)
-- Larger keys (~1.5KB public key vs 32 bytes) but 66% faster scanning
-- Reference: https://arxiv.org/abs/2501.13733
+For quantum resistance, we implement a **hybrid** approach combining X25519 + ML-KEM:
+- Uses Apple CryptoKit `MLKEM768` (iOS 26+) - no external dependencies
+- NIST FIPS 203 standardized (Kyber-768, NIST Level 3 security)
+- 66% faster scanning than classical ECDH per arxiv.org/abs/2501.13733
+- Secure Enclave support with formally verified implementation
 
-**Kyber flow replaces X25519 ECDH:**
+**Key Sizes (MLKEM768):**
+| Component | Size |
+|-----------|------|
+| Public Key | 1,184 bytes |
+| Private Key | 2,400 bytes |
+| Ciphertext | 1,088 bytes |
+| Shared Secret | 32 bytes |
+
+**Hybrid Meta-Address Format:**
 ```
-1. Receiver's viewing key: Kyber keypair (sk_v, pk_v)
-2. Sender encapsulates: (ciphertext, shared_secret) = Kyber.Encapsulate(pk_v)
-3. Receiver decapsulates: shared_secret = Kyber.Decapsulate(ciphertext, sk_v)
-4. Rest of protocol unchanged (hash shared_secret, add to spending key)
+Classical:  M (32 bytes) || V (32 bytes) = 64 bytes
+Hybrid:     M (32 bytes) || V (32 bytes) || K_pub (1184 bytes) = 1280 bytes
+```
+
+**Hybrid Stealth Address Derivation:**
+```
+Sender:
+1. Generate ephemeral X25519 keypair (r, R)
+2. S_classical = X25519(r, V)
+3. (ciphertext, S_kyber) = MLKEM768.encapsulate(K_pub)
+4. Combined: S = SHA256(S_classical || S_kyber)
+5. P_stealth = M + SHA256(S)*G
+6. Memo: R (32 bytes) || ciphertext (1088 bytes)
+
+Receiver:
+1. S_classical = X25519(v, R)
+2. S_kyber = MLKEM768.decapsulate(ciphertext, K_priv)
+3. Combined: S = SHA256(S_classical || S_kyber)
+4. Check: P' = M + SHA256(S)*G matches destination
+5. Derive: p_stealth = m + SHA256(S)
 ```
 
 ## Tech Stack
 
 ### iOS (Hackathon - Primary)
-- Swift 5.9+ / iOS 15+ deployment target
+- Swift 5.9+ / **iOS 26+ deployment target** (for CryptoKit MLKEM768)
 - SwiftUI for UI with MVVM architecture
 - CoreBluetooth for BLE mesh networking
-- CryptoKit for X25519, AES-256-GCM, SHA256
+- CryptoKit for X25519, AES-256-GCM, SHA256, **MLKEM768** (post-quantum)
 - swift-sodium-full for ed25519 point arithmetic (libsodium)
-- liboqs-swift for Kyber/ML-KEM (post-quantum)
 - Solana.Swift for blockchain interaction
 - Base58Swift for Solana address encoding
 
@@ -125,7 +149,7 @@ smesh/
 │           ├── Sources/StealthCore/
 │           │   ├── Crypto/
 │           │   │   ├── SodiumWrapper.swift      # libsodium C bindings
-│           │   │   ├── KyberWrapper.swift       # liboqs Kyber bindings
+│           │   │   ├── MLKEMWrapper.swift       # CryptoKit MLKEM768 (iOS 26+)
 │           │   │   └── StealthCrypto.swift      # Protocol abstraction
 │           │   ├── Stealth/
 │           │   │   ├── StealthKeyPair.swift     # Identity management
@@ -175,8 +199,8 @@ smesh/
 | File | Purpose |
 |------|---------|
 | `SodiumWrapper.swift` | libsodium C bindings for ed25519 point arithmetic (`pointAdd`, `scalarMultBase`, `scalarAdd`) |
-| `KyberWrapper.swift` | liboqs bindings for ML-KEM post-quantum key encapsulation |
-| `StealthCrypto.swift` | Protocol abstraction allowing switch between classical/PQ crypto |
+| `MLKEMWrapper.swift` | CryptoKit MLKEM768 wrapper for post-quantum key encapsulation (iOS 26+) |
+| `StealthCrypto.swift` | Protocol abstraction allowing switch between classical/hybrid crypto |
 
 ### Stealth Protocol
 | File | Purpose |
@@ -284,13 +308,11 @@ final class StealthKeyPairTests: XCTestCase {
 
 ### Swift Package Manager
 ```swift
-// Package.swift dependencies
+// Package.swift
+platforms: [.iOS(.v26), .macOS(.v26)],  // iOS 26+ for CryptoKit MLKEM768
 dependencies: [
     // Ed25519 point arithmetic (libsodium with full build)
-    .package(url: "https://github.com/algorandfoundation/swift-sodium-full.git", from: "0.9.2"),
-
-    // Post-quantum cryptography (Kyber/ML-KEM)
-    .package(url: "https://github.com/open-quantum-safe/liboqs-swift.git", branch: "main"),
+    .package(url: "https://github.com/algorandfoundation/swift-sodium-full.git", from: "1.0.0"),
 
     // Base58 encoding for Solana addresses
     .package(url: "https://github.com/keefertaylor/Base58Swift.git", from: "2.1.0"),
@@ -300,13 +322,16 @@ dependencies: [
 
     // QR code generation
     .package(url: "https://github.com/dagronf/QRCode", from: "18.0.0"),
+
+    // Post-quantum: NO DEPENDENCY NEEDED
+    // CryptoKit MLKEM768 is built into iOS 26+
 ]
 ```
 
 ### Native Frameworks (No Installation Required)
 | Framework | Purpose |
 |-----------|---------|
-| CryptoKit | X25519 ECDH, AES-256-GCM, SHA256, HMAC |
+| CryptoKit | X25519 ECDH, AES-256-GCM, SHA256, HMAC, **MLKEM768** (iOS 26+) |
 | CoreBluetooth | BLE central/peripheral, GATT services |
 | Network | NWPathMonitor for connectivity detection |
 | Security | Keychain Services for key storage |
@@ -449,13 +474,15 @@ let query: [String: Any] = [
 ### Specifications
 - [EIP-5564: Stealth Addresses](https://eips.ethereum.org/EIPS/eip-5564)
 - [Post-Quantum Stealth Address Protocols](https://arxiv.org/abs/2501.13733)
+- [NIST FIPS 203: ML-KEM Standard](https://csrc.nist.gov/pubs/fips/203/final)
 
 ### Libraries
 - [libsodium Point Arithmetic](https://libsodium.gitbook.io/doc/advanced/point-arithmetic)
-- [Open Quantum Safe (liboqs)](https://openquantumsafe.org/)
 - [Solana.Swift](https://github.com/ajamaica/Solana.Swift)
 
 ### Platform Documentation
+- [WWDC25: Get ahead with quantum-secure cryptography](https://developer.apple.com/videos/play/wwdc2025/314/)
+- [Apple CryptoKit MLKEM768](https://developer.apple.com/documentation/cryptokit/mlkem768)
 - [Solana Mobile Stack](https://solanamobile.com/developers)
 - [Helius RPC Docs](https://docs.helius.dev/)
 - [CoreBluetooth Programming Guide](https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/)

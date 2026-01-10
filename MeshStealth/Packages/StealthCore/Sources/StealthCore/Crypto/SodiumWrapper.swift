@@ -1,5 +1,5 @@
 import Foundation
-import Sodium
+@preconcurrency import Sodium
 
 /// Wrapper for libsodium ed25519 point arithmetic operations.
 /// Required for stealth address derivation (EIP-5564 style).
@@ -11,7 +11,7 @@ import Sodium
 public struct SodiumWrapper {
 
     /// Shared Sodium instance
-    private static let sodium = Sodium()
+    nonisolated(unsafe) private static let sodium = Sodium()
 
     /// Size of an ed25519 point (compressed)
     public static let pointBytes = 32

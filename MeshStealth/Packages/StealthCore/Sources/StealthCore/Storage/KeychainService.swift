@@ -6,7 +6,7 @@ import Security
 /// Private keys are stored with:
 /// - `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` - only accessible when device is unlocked
 /// - Non-migratable - keys don't transfer to new devices via backup
-public final class KeychainService {
+public final class KeychainService: @unchecked Sendable {
 
     /// Shared instance with default service identifier
     public static let shared = KeychainService()
@@ -21,7 +21,9 @@ public final class KeychainService {
     private enum Account: String {
         case spendingScalar = "stealth.spending.scalar"
         case viewingPrivateKey = "stealth.viewing.private"
+        case mlkemPrivateKey = "stealth.mlkem.private"  // ~2400 bytes for hybrid mode
         case metaAddressPublic = "stealth.meta.public"
+        case hybridMetaAddressPublic = "stealth.hybridmeta.public"  // 1248 bytes
     }
 
     /// Initialize with custom service identifier
@@ -51,12 +53,34 @@ public final class KeychainService {
             account: .viewingPrivateKey
         )
 
+        // Store MLKEM private key if present (hybrid mode)
+        if let mlkemPriv = keyPair.rawMLKEMPrivateKey {
+            try storeData(
+                mlkemPriv,
+                account: .mlkemPrivateKey
+            )
+        } else {
+            // Remove any existing MLKEM key if switching from hybrid to classical
+            try? deleteData(account: .mlkemPrivateKey)
+        }
+
         // Store public meta-address (for quick access without unlocking private keys)
         try storeData(
             keyPair.metaAddress,
             account: .metaAddressPublic,
             accessible: kSecAttrAccessibleAfterFirstUnlock
         )
+
+        // Store hybrid meta-address if applicable
+        if keyPair.hasPostQuantum {
+            try storeData(
+                keyPair.hybridMetaAddress,
+                account: .hybridMetaAddressPublic,
+                accessible: kSecAttrAccessibleAfterFirstUnlock
+            )
+        } else {
+            try? deleteData(account: .hybridMetaAddressPublic)
+        }
     }
 
     /// Load the stored stealth keypair
@@ -68,16 +92,30 @@ public final class KeychainService {
             return nil
         }
 
+        // Try to load MLKEM key (may not exist for classical-only keypairs)
+        let mlkemPrivateKey = try loadData(account: .mlkemPrivateKey)
+
         return try StealthKeyPair.restore(
             spendingScalar: spendingScalar,
-            viewingPrivateKey: viewingPrivateKey
+            viewingPrivateKey: viewingPrivateKey,
+            mlkemPrivateKey: mlkemPrivateKey
         )
     }
 
-    /// Load only the public meta-address
+    /// Load only the public meta-address (classical 64-byte format)
     /// Doesn't require unlocking private keys - useful for displaying address
     /// - Returns: The meta-address or nil if not stored
     public func loadMetaAddress() throws -> Data? {
+        return try loadData(account: .metaAddressPublic)
+    }
+
+    /// Load the hybrid meta-address (1248 bytes with MLKEM public key)
+    /// Falls back to classical meta-address if hybrid not stored
+    /// - Returns: The hybrid meta-address, classical meta-address, or nil
+    public func loadHybridMetaAddress() throws -> Data? {
+        if let hybrid = try loadData(account: .hybridMetaAddressPublic) {
+            return hybrid
+        }
         return try loadData(account: .metaAddressPublic)
     }
 
@@ -87,12 +125,21 @@ public final class KeychainService {
         return data.base58EncodedString
     }
 
+    /// Load hybrid meta-address as base58 string
+    /// Falls back to classical meta-address if hybrid not stored
+    public func loadHybridMetaAddressString() throws -> String? {
+        guard let data = try loadHybridMetaAddress() else { return nil }
+        return data.base58EncodedString
+    }
+
     /// Delete all stored keypair data
     /// - Throws: StealthError.keychainError if deletion fails
     public func deleteKeyPair() throws {
         try deleteData(account: .spendingScalar)
         try deleteData(account: .viewingPrivateKey)
+        try deleteData(account: .mlkemPrivateKey)
         try deleteData(account: .metaAddressPublic)
+        try deleteData(account: .hybridMetaAddressPublic)
     }
 
     /// Check if a keypair exists in the Keychain

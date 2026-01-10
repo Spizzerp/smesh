@@ -447,4 +447,377 @@ final class CryptoRoundtripTests: XCTestCase {
         }
         XCTAssertEqual(aPlusZero, scalarA, "Adding zero to a reduced scalar should return the same scalar")
     }
+
+    // MARK: - MLKEM768 / Kyber Tests
+
+    func testMLKEMKeyGeneration() throws {
+        let (privateKey, publicKey) = try MLKEMWrapper.generateKeyPairData()
+
+        XCTAssertEqual(publicKey.count, MLKEMWrapper.publicKeyBytes, "MLKEM public key should be 1184 bytes")
+        // Private key uses integrityCheckedRepresentation which is compact
+        XCTAssertGreaterThan(privateKey.count, 0, "MLKEM private key should have data")
+    }
+
+    func testMLKEMEncapsulateDecapsulate() throws {
+        // Generate keypair
+        let (privateKey, publicKey) = try MLKEMWrapper.generateKeyPairData()
+
+        // Encapsulate with public key
+        let (ciphertext, sharedSecret) = try MLKEMWrapper.encapsulate(publicKeyData: publicKey)
+
+        XCTAssertEqual(ciphertext.count, MLKEMWrapper.ciphertextBytes, "Ciphertext should be 1088 bytes")
+        XCTAssertEqual(sharedSecret.count, MLKEMWrapper.sharedSecretBytes, "Shared secret should be 32 bytes")
+
+        // Decapsulate with private key
+        let recoveredSecret = try MLKEMWrapper.decapsulate(
+            ciphertextData: ciphertext,
+            privateKeyData: privateKey
+        )
+
+        XCTAssertEqual(recoveredSecret, sharedSecret, "Decapsulated secret should match encapsulated secret")
+    }
+
+    func testMLKEMKeyRestoration() throws {
+        let (privateKeyData, publicKeyData) = try MLKEMWrapper.generateKeyPairData()
+
+        // Restore keys from data
+        let restoredPriv = MLKEMWrapper.restorePrivateKey(from: privateKeyData)
+        let restoredPub = MLKEMWrapper.restorePublicKey(from: publicKeyData)
+
+        XCTAssertNotNil(restoredPriv, "Should restore private key from data")
+        XCTAssertNotNil(restoredPub, "Should restore public key from data")
+    }
+
+    func testMLKEMValidation() throws {
+        let (_, publicKey) = try MLKEMWrapper.generateKeyPairData()
+
+        XCTAssertTrue(MLKEMWrapper.isValidPublicKey(publicKey))
+        XCTAssertFalse(MLKEMWrapper.isValidPublicKey(Data(repeating: 0, count: 32)))
+
+        let ciphertext = Data(repeating: 0, count: MLKEMWrapper.ciphertextBytes)
+        XCTAssertTrue(MLKEMWrapper.isValidCiphertext(ciphertext))
+        XCTAssertFalse(MLKEMWrapper.isValidCiphertext(Data(repeating: 0, count: 32)))
+    }
+
+    // MARK: - Hybrid Keypair Tests
+
+    func testHybridKeyPairGeneration() throws {
+        let keyPair = try StealthKeyPair.generate(withPostQuantum: true)
+
+        // Classical keys
+        XCTAssertEqual(keyPair.spendingPublicKey.count, 32)
+        XCTAssertEqual(keyPair.viewingPublicKey.count, 32)
+        XCTAssertEqual(keyPair.rawSpendingScalar.count, 32)
+        XCTAssertEqual(keyPair.rawViewingPrivateKey.count, 32)
+
+        // MLKEM keys
+        XCTAssertTrue(keyPair.hasPostQuantum)
+        XCTAssertNotNil(keyPair.mlkemPublicKey)
+        XCTAssertNotNil(keyPair.rawMLKEMPrivateKey)
+        XCTAssertEqual(keyPair.mlkemPublicKey?.count, MLKEMWrapper.publicKeyBytes)
+
+        // Meta addresses
+        XCTAssertEqual(keyPair.metaAddress.count, 64, "Classical meta-address should be 64 bytes")
+        XCTAssertEqual(keyPair.hybridMetaAddress.count, 64 + MLKEMWrapper.publicKeyBytes,
+                       "Hybrid meta-address should be 1248 bytes")
+    }
+
+    func testHybridKeyPairRestoration() throws {
+        let original = try StealthKeyPair.generate(withPostQuantum: true)
+
+        let restored = try StealthKeyPair.restore(
+            spendingScalar: original.rawSpendingScalar,
+            viewingPrivateKey: original.rawViewingPrivateKey,
+            mlkemPrivateKey: original.rawMLKEMPrivateKey
+        )
+
+        XCTAssertEqual(restored.spendingPublicKey, original.spendingPublicKey)
+        XCTAssertEqual(restored.viewingPublicKey, original.viewingPublicKey)
+        XCTAssertEqual(restored.mlkemPublicKey, original.mlkemPublicKey)
+        XCTAssertTrue(restored.hasPostQuantum)
+    }
+
+    func testHybridMetaAddressParsing() throws {
+        let keyPair = try StealthKeyPair.generate(withPostQuantum: true)
+        let hybridMetaStr = keyPair.hybridMetaAddressString
+
+        let (spendKey, viewKey, mlkemKey) = try StealthKeyPair.parseHybridMetaAddress(hybridMetaStr)
+
+        XCTAssertEqual(spendKey, keyPair.spendingPublicKey)
+        XCTAssertEqual(viewKey, keyPair.viewingPublicKey)
+        XCTAssertNotNil(mlkemKey)
+        XCTAssertEqual(mlkemKey, keyPair.mlkemPublicKey)
+    }
+
+    func testClassicalMetaAddressParsingWithHybridParser() throws {
+        let keyPair = try StealthKeyPair.generate(withPostQuantum: false)
+        let classicalMetaStr = keyPair.metaAddressString
+
+        let (spendKey, viewKey, mlkemKey) = try StealthKeyPair.parseHybridMetaAddress(classicalMetaStr)
+
+        XCTAssertEqual(spendKey, keyPair.spendingPublicKey)
+        XCTAssertEqual(viewKey, keyPair.viewingPublicKey)
+        XCTAssertNil(mlkemKey, "Classical meta-address should have nil MLKEM key")
+    }
+
+    // MARK: - Hybrid Stealth Address Tests
+
+    func testHybridStealthAddressGeneration() throws {
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+
+        let result = try StealthAddressGenerator.generateHybridStealthAddress(
+            spendingPublicKey: receiverKeyPair.spendingPublicKey,
+            viewingPublicKey: receiverKeyPair.viewingPublicKey,
+            mlkemPublicKey: receiverKeyPair.mlkemPublicKey!
+        )
+
+        XCTAssertEqual(result.stealthPublicKey.count, 32)
+        XCTAssertEqual(result.ephemeralPublicKey.count, 32)
+        XCTAssertTrue(result.isHybrid, "Result should be hybrid")
+        XCTAssertNotNil(result.mlkemCiphertext)
+        XCTAssertEqual(result.mlkemCiphertext?.count, MLKEMWrapper.ciphertextBytes)
+        XCTAssertFalse(result.stealthAddress.isEmpty)
+        XCTAssert(SodiumWrapper.isValidPoint(result.stealthPublicKey))
+    }
+
+    func testHybridMemoDataFormat() throws {
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+
+        let result = try StealthAddressGenerator.generateHybridStealthAddress(
+            spendingPublicKey: receiverKeyPair.spendingPublicKey,
+            viewingPublicKey: receiverKeyPair.viewingPublicKey,
+            mlkemPublicKey: receiverKeyPair.mlkemPublicKey!
+        )
+
+        // Hybrid memo: R (32) || ciphertext (1088) = 1120 bytes
+        XCTAssertEqual(result.memoData.count, 32 + MLKEMWrapper.ciphertextBytes)
+        XCTAssertEqual(result.memoData.prefix(32), result.ephemeralPublicKey)
+        XCTAssertEqual(Data(result.memoData.suffix(MLKEMWrapper.ciphertextBytes)), result.mlkemCiphertext)
+    }
+
+    func testAutoModeDetectsHybridMetaAddress() throws {
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+
+        let result = try StealthAddressGenerator.generateStealthAddressAuto(
+            metaAddressString: receiverKeyPair.hybridMetaAddressString
+        )
+
+        XCTAssertTrue(result.isHybrid, "Auto mode should detect hybrid meta-address")
+        XCTAssertNotNil(result.mlkemCiphertext)
+    }
+
+    func testAutoModeUsesClassicalForClassicalMetaAddress() throws {
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: false)
+
+        let result = try StealthAddressGenerator.generateStealthAddressAuto(
+            metaAddressString: receiverKeyPair.metaAddressString
+        )
+
+        XCTAssertFalse(result.isHybrid, "Auto mode should use classical for classical meta-address")
+        XCTAssertNil(result.mlkemCiphertext)
+    }
+
+    // MARK: - Hybrid Scanner Tests
+
+    func testHybridScanDetectsOurTransaction() throws {
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+        let scanner = StealthScanner(keyPair: receiverKeyPair)
+
+        // Sender generates hybrid stealth address
+        let stealthResult = try StealthAddressGenerator.generateHybridStealthAddress(
+            spendingPublicKey: receiverKeyPair.spendingPublicKey,
+            viewingPublicKey: receiverKeyPair.viewingPublicKey,
+            mlkemPublicKey: receiverKeyPair.mlkemPublicKey!
+        )
+
+        // Receiver scans hybrid transaction
+        let detected = try scanner.scanHybridTransaction(
+            stealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey,
+            mlkemCiphertext: stealthResult.mlkemCiphertext!
+        )
+
+        XCTAssertNotNil(detected)
+        XCTAssertEqual(detected?.stealthAddress, stealthResult.stealthAddress)
+        XCTAssertTrue(detected?.isHybrid ?? false)
+    }
+
+    func testHybridScanIgnoresOtherTransactions() throws {
+        let ourKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+        let otherKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+
+        let scanner = StealthScanner(keyPair: ourKeyPair)
+
+        // Stealth address for different receiver
+        let stealthResult = try StealthAddressGenerator.generateHybridStealthAddress(
+            spendingPublicKey: otherKeyPair.spendingPublicKey,
+            viewingPublicKey: otherKeyPair.viewingPublicKey,
+            mlkemPublicKey: otherKeyPair.mlkemPublicKey!
+        )
+
+        // Our scanner should not detect it
+        let detected = try scanner.scanHybridTransaction(
+            stealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey,
+            mlkemCiphertext: stealthResult.mlkemCiphertext!
+        )
+
+        XCTAssertNil(detected)
+    }
+
+    func testScanFromMemoHybrid() throws {
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+        let scanner = StealthScanner(keyPair: receiverKeyPair)
+
+        let stealthResult = try StealthAddressGenerator.generateHybridStealthAddress(
+            spendingPublicKey: receiverKeyPair.spendingPublicKey,
+            viewingPublicKey: receiverKeyPair.viewingPublicKey,
+            mlkemPublicKey: receiverKeyPair.mlkemPublicKey!
+        )
+
+        // Scan using memo data format
+        let detected = try scanner.scanFromMemo(
+            stealthAddress: stealthResult.stealthAddress,
+            memoData: stealthResult.memoData
+        )
+
+        XCTAssertNotNil(detected)
+        XCTAssertEqual(detected?.stealthAddress, stealthResult.stealthAddress)
+    }
+
+    func testScanFromMemoClassical() throws {
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: false)
+        let scanner = StealthScanner(keyPair: receiverKeyPair)
+
+        let stealthResult = try StealthAddressGenerator.generateStealthAddress(
+            metaAddressString: receiverKeyPair.metaAddressString
+        )
+
+        // Scan using memo data format (classical = just ephemeral key)
+        let detected = try scanner.scanFromMemo(
+            stealthAddress: stealthResult.stealthAddress,
+            memoData: stealthResult.memoData
+        )
+
+        XCTAssertNotNil(detected)
+        XCTAssertEqual(detected?.stealthAddress, stealthResult.stealthAddress)
+    }
+
+    // MARK: - Complete Hybrid Protocol Roundtrip
+
+    func testCompleteHybridProtocolRoundtrip() throws {
+        // Step 1: Receiver generates hybrid stealth keypair
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+        let hybridMetaAddress = receiverKeyPair.hybridMetaAddressString
+
+        // Step 2: Sender generates hybrid stealth address from meta-address
+        let stealthResult = try StealthAddressGenerator.generateStealthAddressAuto(
+            metaAddressString: hybridMetaAddress
+        )
+
+        XCTAssertTrue(stealthResult.isHybrid, "Should use hybrid mode")
+
+        // Step 3: Receiver scans and detects payment using memo data
+        let scanner = StealthScanner(keyPair: receiverKeyPair)
+        let detected = try scanner.scanFromMemo(
+            stealthAddress: stealthResult.stealthAddress,
+            memoData: stealthResult.memoData
+        )
+
+        XCTAssertNotNil(detected)
+
+        // Step 4: Verify derived spending key produces correct public key
+        guard let derivedPubKey = SodiumWrapper.scalarMultBaseNoclamp(
+            detected!.spendingPrivateKey
+        ) else {
+            XCTFail("Failed to derive public key")
+            return
+        }
+
+        XCTAssertEqual(derivedPubKey, stealthResult.stealthPublicKey)
+        XCTAssertEqual(detected!.stealthAddress, stealthResult.stealthAddress)
+    }
+
+    func testBackwardsCompatibilityWithClassical() throws {
+        // Classical sender, classical receiver
+        let classicalReceiver = try StealthKeyPair.generate(withPostQuantum: false)
+
+        let stealthResult = try StealthAddressGenerator.generateStealthAddress(
+            metaAddressString: classicalReceiver.metaAddressString
+        )
+
+        XCTAssertFalse(stealthResult.isHybrid)
+
+        let scanner = StealthScanner(keyPair: classicalReceiver)
+        let detected = try scanner.scanTransaction(
+            stealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey
+        )
+
+        XCTAssertNotNil(detected)
+        XCTAssertFalse(detected!.isHybrid)
+    }
+
+    func testHybridDerivedKeyCanSign() throws {
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+        let scanner = StealthScanner(keyPair: receiverKeyPair)
+
+        let stealthResult = try StealthAddressGenerator.generateHybridStealthAddress(
+            spendingPublicKey: receiverKeyPair.spendingPublicKey,
+            viewingPublicKey: receiverKeyPair.viewingPublicKey,
+            mlkemPublicKey: receiverKeyPair.mlkemPublicKey!
+        )
+
+        let detected = try scanner.scanHybridTransaction(
+            stealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey,
+            mlkemCiphertext: stealthResult.mlkemCiphertext!
+        )!
+
+        // Verify the derived private key produces the correct public key
+        guard let derivedPubKey = SodiumWrapper.scalarMultBaseNoclamp(
+            detected.spendingPrivateKey
+        ) else {
+            XCTFail("Failed to derive public key from spending key")
+            return
+        }
+
+        XCTAssertEqual(derivedPubKey, stealthResult.stealthPublicKey)
+    }
+
+    func testMultipleHybridPaymentsToSameReceiver() throws {
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+        let scanner = StealthScanner(keyPair: receiverKeyPair)
+
+        var detectedPayments: [DetectedStealthPayment] = []
+        var stealthAddresses: Set<String> = []
+
+        // Generate 5 hybrid payments to same receiver
+        for _ in 0..<5 {
+            let result = try StealthAddressGenerator.generateHybridStealthAddress(
+                spendingPublicKey: receiverKeyPair.spendingPublicKey,
+                viewingPublicKey: receiverKeyPair.viewingPublicKey,
+                mlkemPublicKey: receiverKeyPair.mlkemPublicKey!
+            )
+
+            // Each stealth address should be unique
+            XCTAssertFalse(stealthAddresses.contains(result.stealthAddress))
+            stealthAddresses.insert(result.stealthAddress)
+
+            // Scanner should detect each
+            let detected = try scanner.scanHybridTransaction(
+                stealthAddress: result.stealthAddress,
+                ephemeralPublicKey: result.ephemeralPublicKey,
+                mlkemCiphertext: result.mlkemCiphertext!
+            )
+
+            XCTAssertNotNil(detected)
+            detectedPayments.append(detected!)
+        }
+
+        // All 5 payments detected with unique spending keys
+        XCTAssertEqual(detectedPayments.count, 5)
+        let uniqueKeys = Set(detectedPayments.map { $0.spendingPrivateKey.hexString })
+        XCTAssertEqual(uniqueKeys.count, 5)
+    }
 }

@@ -1,11 +1,11 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
     name: "StealthCore",
     platforms: [
-        .iOS(.v15),
-        .macOS(.v12)
+        .iOS("26.0"),    // iOS 26+ required for CryptoKit MLKEM768
+        .macOS("26.0")   // macOS Tahoe 26+ required for CryptoKit MLKEM768
     ],
     products: [
         .library(
@@ -21,8 +21,8 @@ let package = Package(
         // Base58 encoding for Solana addresses
         .package(url: "https://github.com/keefertaylor/Base58Swift.git", from: "2.1.0"),
 
-        // Post-quantum cryptography (Kyber/ML-KEM) - optional for now
-        // .package(url: "https://github.com/open-quantum-safe/liboqs-swift.git", branch: "main"),
+        // Post-quantum cryptography: NO EXTERNAL DEPENDENCY NEEDED
+        // CryptoKit MLKEM768 is built into iOS 26+ / macOS 26+
     ],
     targets: [
         .target(
