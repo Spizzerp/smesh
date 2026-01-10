@@ -1,0 +1,236 @@
+import Foundation
+import Security
+
+/// Manages secure storage of stealth keypairs in the iOS Keychain.
+///
+/// Private keys are stored with:
+/// - `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` - only accessible when device is unlocked
+/// - Non-migratable - keys don't transfer to new devices via backup
+public final class KeychainService {
+
+    /// Shared instance with default service identifier
+    public static let shared = KeychainService()
+
+    /// Keychain service identifier
+    private let service: String
+
+    /// Access group for shared keychain (nil for app-only)
+    private let accessGroup: String?
+
+    /// Keychain account keys
+    private enum Account: String {
+        case spendingScalar = "stealth.spending.scalar"
+        case viewingPrivateKey = "stealth.viewing.private"
+        case metaAddressPublic = "stealth.meta.public"
+    }
+
+    /// Initialize with custom service identifier
+    /// - Parameters:
+    ///   - service: Keychain service identifier
+    ///   - accessGroup: Optional access group for keychain sharing between apps
+    public init(service: String = "com.meshstealth.keychain", accessGroup: String? = nil) {
+        self.service = service
+        self.accessGroup = accessGroup
+    }
+
+    // MARK: - StealthKeyPair Storage
+
+    /// Store a stealth keypair securely in the Keychain
+    /// - Parameter keyPair: The keypair to store
+    /// - Throws: StealthError.keychainError if storage fails
+    public func storeKeyPair(_ keyPair: StealthKeyPair) throws {
+        // Store spending scalar (most sensitive)
+        try storeData(
+            keyPair.rawSpendingScalar,
+            account: .spendingScalar
+        )
+
+        // Store viewing private key
+        try storeData(
+            keyPair.rawViewingPrivateKey,
+            account: .viewingPrivateKey
+        )
+
+        // Store public meta-address (for quick access without unlocking private keys)
+        try storeData(
+            keyPair.metaAddress,
+            account: .metaAddressPublic,
+            accessible: kSecAttrAccessibleAfterFirstUnlock
+        )
+    }
+
+    /// Load the stored stealth keypair
+    /// - Returns: The keypair or nil if not found
+    /// - Throws: StealthError if keypair exists but can't be restored
+    public func loadKeyPair() throws -> StealthKeyPair? {
+        guard let spendingScalar = try loadData(account: .spendingScalar),
+              let viewingPrivateKey = try loadData(account: .viewingPrivateKey) else {
+            return nil
+        }
+
+        return try StealthKeyPair.restore(
+            spendingScalar: spendingScalar,
+            viewingPrivateKey: viewingPrivateKey
+        )
+    }
+
+    /// Load only the public meta-address
+    /// Doesn't require unlocking private keys - useful for displaying address
+    /// - Returns: The meta-address or nil if not stored
+    public func loadMetaAddress() throws -> Data? {
+        return try loadData(account: .metaAddressPublic)
+    }
+
+    /// Load meta-address as base58 string
+    public func loadMetaAddressString() throws -> String? {
+        guard let data = try loadMetaAddress() else { return nil }
+        return data.base58EncodedString
+    }
+
+    /// Delete all stored keypair data
+    /// - Throws: StealthError.keychainError if deletion fails
+    public func deleteKeyPair() throws {
+        try deleteData(account: .spendingScalar)
+        try deleteData(account: .viewingPrivateKey)
+        try deleteData(account: .metaAddressPublic)
+    }
+
+    /// Check if a keypair exists in the Keychain
+    /// - Returns: true if a keypair is stored
+    public func hasKeyPair() -> Bool {
+        (try? loadData(account: .spendingScalar)) != nil
+    }
+
+    // MARK: - Generic Data Storage
+
+    /// Store arbitrary data with a custom key
+    /// - Parameters:
+    ///   - data: Data to store
+    ///   - key: Storage key
+    public func store(_ data: Data, forKey key: String) throws {
+        try storeData(data, accountString: key)
+    }
+
+    /// Load arbitrary data by key
+    /// - Parameter key: Storage key
+    /// - Returns: Stored data or nil
+    public func load(forKey key: String) throws -> Data? {
+        return try loadData(accountString: key)
+    }
+
+    /// Delete data by key
+    /// - Parameter key: Storage key
+    public func delete(forKey key: String) throws {
+        try deleteData(accountString: key)
+    }
+
+    // MARK: - Private Helpers
+
+    private func storeData(
+        _ data: Data,
+        account: Account,
+        accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+    ) throws {
+        try storeData(data, accountString: account.rawValue, accessible: accessible)
+    }
+
+    private func storeData(
+        _ data: Data,
+        accountString: String,
+        accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+    ) throws {
+        // Delete existing item first (update not always reliable)
+        try? deleteData(accountString: accountString)
+
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: accountString,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: accessible
+        ]
+
+        if let accessGroup = accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+
+        let status = SecItemAdd(query as CFDictionary, nil)
+
+        guard status == errSecSuccess else {
+            throw StealthError.keychainError(status)
+        }
+    }
+
+    private func loadData(account: Account) throws -> Data? {
+        return try loadData(accountString: account.rawValue)
+    }
+
+    private func loadData(accountString: String) throws -> Data? {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: accountString,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        if let accessGroup = accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        switch status {
+        case errSecSuccess:
+            return result as? Data
+        case errSecItemNotFound:
+            return nil
+        default:
+            throw StealthError.keychainError(status)
+        }
+    }
+
+    private func deleteData(account: Account) throws {
+        try deleteData(accountString: account.rawValue)
+    }
+
+    private func deleteData(accountString: String) throws {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: accountString
+        ]
+
+        if let accessGroup = accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+
+        let status = SecItemDelete(query as CFDictionary)
+
+        // Success or item not found are both acceptable
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw StealthError.keychainError(status)
+        }
+    }
+
+    // MARK: - Utility
+
+    /// Clear all data for this service (use with caution!)
+    public func clearAll() throws {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service
+        ]
+
+        if let accessGroup = accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+
+        let status = SecItemDelete(query as CFDictionary)
+
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw StealthError.keychainError(status)
+        }
+    }
+}

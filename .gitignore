@@ -1,0 +1,63 @@
+# Claude Code
+.claude/
+
+# Xcode
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# Carthage
+Carthage/Build/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+*.swp
+*~
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.p12
+*.key
+secrets/
+
+# Build artifacts
+build/
+*.app
+*.framework
+*.xcframework
+
+# Test artifacts
+*.xcresult
+coverage/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
