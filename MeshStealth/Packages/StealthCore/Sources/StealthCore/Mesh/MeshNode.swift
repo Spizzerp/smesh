@@ -111,14 +111,14 @@ public actor MeshNode {
     public weak var delegate: MeshNodeDelegate?
 
     /// Publisher for peer updates
-    private let peerUpdateSubject = PassthroughSubject<[MeshPeer], Never>()
-    public var peerUpdates: AnyPublisher<[MeshPeer], Never> {
+    private nonisolated(unsafe) let peerUpdateSubject = PassthroughSubject<[MeshPeer], Never>()
+    public nonisolated var peerUpdates: AnyPublisher<[MeshPeer], Never> {
         peerUpdateSubject.eraseToAnyPublisher()
     }
 
     /// Publisher for received stealth payments
-    private let paymentReceivedSubject = PassthroughSubject<MeshStealthPayload, Never>()
-    public var paymentsReceived: AnyPublisher<MeshStealthPayload, Never> {
+    private nonisolated(unsafe) let paymentReceivedSubject = PassthroughSubject<MeshStealthPayload, Never>()
+    public nonisolated var paymentsReceived: AnyPublisher<MeshStealthPayload, Never> {
         paymentReceivedSubject.eraseToAnyPublisher()
     }
 

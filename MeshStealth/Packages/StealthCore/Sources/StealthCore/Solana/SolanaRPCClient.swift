@@ -32,7 +32,7 @@ public enum SolanaError: Error, LocalizedError {
 }
 
 /// Solana network cluster configuration
-public enum SolanaCluster {
+public enum SolanaCluster: Sendable {
     case mainnetBeta
     case devnet
     case testnet
