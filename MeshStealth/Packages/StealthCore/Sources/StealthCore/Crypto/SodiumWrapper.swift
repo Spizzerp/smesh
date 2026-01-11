@@ -286,13 +286,24 @@ public struct SodiumWrapper {
         return Data(hash)
     }
 
-    /// SHA-512 hash (for scalar reduction)
+    /// SHA-512 hash (for ed25519 scalar reduction)
+    /// Uses actual SHA-512, not BLAKE2b - required for ed25519 compatibility
     /// - Parameter data: Data to hash
     /// - Returns: 64-byte hash
     public static func sha512(_ data: Data) -> Data {
-        guard let hash = sodium.genericHash.hash(message: Bytes(data), outputLength: 64) else {
-            fatalError("SHA-512 hash failed")
+        // Use libsodium's crypto_hash_sha512 for actual SHA-512
+        var hash = Bytes(repeating: 0, count: 64)
+
+        hash.withUnsafeMutableBufferPointer { hashPtr in
+            data.withUnsafeBytes { dataPtr in
+                crypto_hash_sha512(
+                    hashPtr.baseAddress,
+                    dataPtr.bindMemory(to: UInt8.self).baseAddress,
+                    UInt64(data.count)
+                )
+            }
         }
+
         return Data(hash)
     }
 
@@ -303,6 +314,91 @@ public struct SodiumWrapper {
     /// - Returns: Random data
     public static func randomBytes(count: Int) -> Data {
         return Data(sodium.randomBytes.buf(length: count) ?? [])
+    }
+
+    // MARK: - Raw Scalar Ed25519 Signing
+
+    /// Sign a message using a raw scalar (not an ed25519 seed).
+    /// This is required for stealth address spending keys which are raw scalars
+    /// derived via `p = m + hash(S) mod L`, not seed-expanded keys.
+    ///
+    /// Uses RFC 8032 ed25519 signing with a deterministic nonce derived from
+    /// the scalar and message (similar to how standard ed25519 uses a prefix).
+    ///
+    /// - Parameters:
+    ///   - message: Message to sign
+    ///   - scalar: 32-byte signing scalar (NOT a seed)
+    ///   - publicKey: 32-byte public key (must equal scalar * G)
+    /// - Returns: 64-byte ed25519 signature, or nil on failure
+    public static func signWithScalar(
+        message: Data,
+        scalar: Data,
+        publicKey: Data
+    ) -> Data? {
+        guard scalar.count == scalarBytes, publicKey.count == pointBytes else {
+            return nil
+        }
+
+        // Ed25519 signing with raw scalar:
+        // 1. Generate deterministic nonce: r_hash = SHA512(scalar || message)
+        // 2. Reduce to scalar: r = r_hash mod L
+        // 3. Compute R = r * G
+        // 4. Compute challenge: k = SHA512(R || A || message) mod L
+        // 5. Compute s = r + k * a mod L
+        // 6. Signature is R || s (64 bytes)
+
+        // Step 1-2: Deterministic nonce
+        let nonceInput = scalar + message
+        let nonceHash = sha512(nonceInput)
+        guard let r = scalarReduce(nonceHash) else {
+            return nil
+        }
+
+        // Step 3: R = r * G
+        guard let R = scalarMultBaseNoclamp(r) else {
+            return nil
+        }
+
+        // Step 4: k = H(R || A || M) mod L
+        let challengeInput = R + publicKey + message
+        let challengeHash = sha512(challengeInput)
+        guard let k = scalarReduce(challengeHash) else {
+            return nil
+        }
+
+        // Step 5: s = r + k * a mod L
+        guard let ka = scalarMul(k, scalar),
+              let s = scalarAdd(r, ka) else {
+            return nil
+        }
+
+        // Step 6: Signature = R || s
+        return R + s
+    }
+
+    /// Multiply two scalars modulo L: result = a * b (mod L)
+    /// - Parameters:
+    ///   - a: First scalar (32 bytes)
+    ///   - b: Second scalar (32 bytes)
+    /// - Returns: Result scalar (32 bytes)
+    public static func scalarMul(_ a: Data, _ b: Data) -> Data? {
+        guard a.count == scalarBytes, b.count == scalarBytes else { return nil }
+
+        var result = Bytes(repeating: 0, count: scalarBytes)
+
+        result.withUnsafeMutableBufferPointer { resultPtr in
+            a.withUnsafeBytes { aPtr in
+                b.withUnsafeBytes { bPtr in
+                    crypto_core_ed25519_scalar_mul(
+                        resultPtr.baseAddress,
+                        aPtr.bindMemory(to: UInt8.self).baseAddress,
+                        bPtr.bindMemory(to: UInt8.self).baseAddress
+                    )
+                }
+            }
+        }
+
+        return Data(result)
     }
 }
 
@@ -346,4 +442,18 @@ private func crypto_core_ed25519_scalar_reduce(
 @_silgen_name("crypto_core_ed25519_is_valid_point")
 private func crypto_core_ed25519_is_valid_point(
     _ p: UnsafePointer<UInt8>?
+) -> Int32
+
+@_silgen_name("crypto_core_ed25519_scalar_mul")
+private func crypto_core_ed25519_scalar_mul(
+    _ z: UnsafeMutablePointer<UInt8>?,
+    _ x: UnsafePointer<UInt8>?,
+    _ y: UnsafePointer<UInt8>?
+)
+
+@_silgen_name("crypto_hash_sha512")
+private func crypto_hash_sha512(
+    _ out: UnsafeMutablePointer<UInt8>?,
+    _ input: UnsafePointer<UInt8>?,
+    _ inlen: UInt64
 ) -> Int32

@@ -112,12 +112,68 @@ public actor SolanaWallet {
         self.mnemonic = nil
     }
 
+    /// Create wallet from a raw scalar (for stealth address spending keys).
+    ///
+    /// Unlike `init(privateKeyData:)` which treats the input as an ed25519 seed
+    /// and performs key expansion, this initializer uses the scalar directly
+    /// for `public key = scalar * G`. Required for stealth address arithmetic
+    /// where spending keys are derived as `p = m + hash(S) mod L`.
+    ///
+    /// - Parameter scalar: 32-byte raw scalar (NOT a seed)
+    /// - Returns: Wallet that can sign using the raw scalar
+    /// - Throws: WalletError if scalar is invalid
+    public init(stealthScalar scalar: Data) throws {
+        guard scalar.count == 32 else {
+            throw WalletError.invalidKeyLength
+        }
+
+        // Derive public key directly: P = scalar * G (no clamping/expansion)
+        guard let publicKey = SodiumWrapper.derivePublicKeyFromScalar(scalar) else {
+            throw WalletError.keyDerivationFailed
+        }
+
+        // Store as pseudo-secretKey: [scalar (32 bytes) || publicKey (32 bytes)]
+        // Note: This is NOT a valid ed25519 secretKey format, but we use it
+        // to store the scalar and pubkey together. signWithScalar() uses these.
+        self.secretKey = scalar + publicKey
+        self.mnemonic = nil
+    }
+
+    /// Whether this wallet uses raw scalar signing (for stealth addresses)
+    public var isStealthScalarWallet: Bool {
+        // Standard ed25519 secretKey has the seed in first 32 bytes, and
+        // the public key derived FROM that seed in last 32 bytes.
+        // For stealth scalar wallets, the first 32 bytes ARE the scalar,
+        // and scalar * G == publicKey (no expansion).
+        // We can detect this by checking if scalar * G == stored pubkey
+        let scalar = privateKeyData
+        let storedPubKey = publicKeyData
+        guard let derivedPubKey = SodiumWrapper.derivePublicKeyFromScalar(scalar) else {
+            return false
+        }
+        return derivedPubKey == storedPubKey
+    }
+
     // MARK: - Signing
 
     /// Sign a message with ed25519
     /// - Parameter message: Message bytes to sign
     /// - Returns: 64-byte ed25519 signature
     public func sign(_ message: Data) throws -> Data {
+        // Check if this is a stealth scalar wallet (raw scalar, not seed-expanded)
+        if isStealthScalarWallet {
+            // Use raw scalar signing for stealth address spending keys
+            guard let signature = SodiumWrapper.signWithScalar(
+                message: message,
+                scalar: privateKeyData,
+                publicKey: publicKeyData
+            ) else {
+                throw WalletError.signingFailed
+            }
+            return signature
+        }
+
+        // Standard ed25519 signing for seed-based wallets
         guard let signature = sodium.sign.signature(
             message: Array(message),
             secretKey: Array(secretKey)

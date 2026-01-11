@@ -206,10 +206,12 @@ public actor ShieldService {
             throw ShieldError.insufficientBalance(available: stealthBalance, required: transferAmount + estimatedFee)
         }
 
-        // 3. Create wallet from spending key
+        // 3. Create wallet from spending key (raw scalar, not seed-expanded)
+        // The spending key is a raw scalar derived as: p = m + hash(S) mod L
+        // We must use stealthScalar init, NOT privateKeyData which treats it as a seed
         let stealthWallet: SolanaWallet
         do {
-            stealthWallet = try SolanaWallet(privateKeyData: spendingKey)
+            stealthWallet = try SolanaWallet(stealthScalar: spendingKey)
         } catch {
             throw ShieldError.keyDerivationFailed
         }
@@ -217,6 +219,10 @@ public actor ShieldService {
         // 4. Verify the derived wallet matches the stealth address
         let derivedAddress = await stealthWallet.address
         guard derivedAddress == payment.stealthAddress else {
+            // Debug: Log the mismatch for troubleshooting
+            print("Stealth address mismatch!")
+            print("  Expected: \(payment.stealthAddress)")
+            print("  Derived:  \(derivedAddress)")
             throw ShieldError.keyDerivationFailed
         }
 

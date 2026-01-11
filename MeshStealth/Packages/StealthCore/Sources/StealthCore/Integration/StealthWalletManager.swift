@@ -51,6 +51,10 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
     /// Error message if failed
     public var errorMessage: String?
 
+    /// Whether this payment was self-shielded (vs received via mesh)
+    /// Shielded payments skip auto-settlement since they're already on-chain
+    public let isShielded: Bool
+
     public init(
         id: UUID = UUID(),
         stealthAddress: String,
@@ -64,7 +68,8 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         settlementAttempts: Int = 0,
         lastAttemptAt: Date? = nil,
         settlementSignature: String? = nil,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        isShielded: Bool = false
     ) {
         self.id = id
         self.stealthAddress = stealthAddress
@@ -79,6 +84,7 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         self.lastAttemptAt = lastAttemptAt
         self.settlementSignature = settlementSignature
         self.errorMessage = errorMessage
+        self.isShielded = isShielded
     }
 
     /// Create from mesh payload
@@ -96,6 +102,7 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         self.lastAttemptAt = nil
         self.settlementSignature = nil
         self.errorMessage = nil
+        self.isShielded = false  // Mesh payments are not shielded
     }
 
     /// Whether this payment is hybrid (post-quantum)
@@ -316,7 +323,8 @@ public class StealthWalletManager: ObservableObject {
     /// Get payments ready for settlement
     public func getPaymentsForSettlement() -> [PendingPayment] {
         pendingPayments.filter { payment in
-            payment.status == .received || payment.status == .failed
+            // Only settle mesh-received payments, not self-shielded ones
+            (payment.status == .received || payment.status == .failed) && !payment.isShielded
         }
     }
 
@@ -538,11 +546,13 @@ public class StealthWalletManager: ObservableObject {
             amount: result.amount,
             tokenMint: nil,
             viewTag: result.viewTag,
-            status: .received  // Treat as received since it's confirmed on-chain
+            status: .received,  // Funds are in stealth address, ready to unshield
+            isShielded: true    // Skip auto-settlement (already on-chain)
         )
         addPendingPayment(payment)
 
-        // Refresh main wallet balance
+        // Wait for RPC to propagate before refreshing balance
+        try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
         await refreshMainWalletBalance()
 
         return result
@@ -586,6 +596,9 @@ public class StealthWalletManager: ObservableObject {
         pendingPayments.removeAll { $0.id == payment.id }
         savePendingPayments()
         updatePendingBalance()
+
+        // Wait for RPC to propagate before refreshing balance
+        try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
         await refreshMainWalletBalance()
 
         return result

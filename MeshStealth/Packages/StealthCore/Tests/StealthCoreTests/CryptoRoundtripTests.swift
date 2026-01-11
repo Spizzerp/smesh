@@ -1,4 +1,5 @@
 import XCTest
+import Sodium
 @testable import StealthCore
 
 /// End-to-end roundtrip tests for the complete stealth protocol.
@@ -819,5 +820,173 @@ final class CryptoRoundtripTests: XCTestCase {
         XCTAssertEqual(detectedPayments.count, 5)
         let uniqueKeys = Set(detectedPayments.map { $0.spendingPrivateKey.hexString })
         XCTAssertEqual(uniqueKeys.count, 5)
+    }
+
+    // MARK: - Stealth Scalar Wallet Signing Tests
+
+    /// Test that signWithScalar produces valid signatures
+    func testSignWithScalarBasic() throws {
+        // Generate a test scalar and derive public key
+        guard let scalarKP = SodiumWrapper.generateScalarKeyPair() else {
+            XCTFail("Failed to generate scalar keypair")
+            return
+        }
+
+        let scalar = scalarKP.scalar
+        let publicKey = scalarKP.publicKey
+
+        // Verify public key matches scalar * G
+        guard let derivedPubKey = SodiumWrapper.derivePublicKeyFromScalar(scalar) else {
+            XCTFail("Failed to derive public key")
+            return
+        }
+        XCTAssertEqual(publicKey, derivedPubKey, "Public key should match scalar * G")
+
+        // Sign a message
+        let message = Data("Test message".utf8)
+        guard let signature = SodiumWrapper.signWithScalar(
+            message: message,
+            scalar: scalar,
+            publicKey: publicKey
+        ) else {
+            XCTFail("Failed to sign message")
+            return
+        }
+
+        XCTAssertEqual(signature.count, 64, "Signature should be 64 bytes")
+
+        // Verify with libsodium
+        let sodium = Sodium()
+        let isValid = sodium.sign.verify(
+            message: Array(message),
+            publicKey: Array(publicKey),
+            signature: Array(signature)
+        )
+        XCTAssertTrue(isValid, "Signature should verify with libsodium")
+    }
+
+    /// Test that a stealth scalar wallet can sign messages correctly
+    func testStealthScalarWalletSigning() async throws {
+        // 1. Generate receiver keypair
+        let receiverKeyPair = try StealthKeyPair.generate()
+
+        // 2. Sender generates stealth address
+        let stealthResult = try StealthAddressGenerator.generateStealthAddress(
+            spendingPublicKey: receiverKeyPair.spendingPublicKey,
+            viewingPublicKey: receiverKeyPair.viewingPublicKey
+        )
+
+        // 3. Receiver detects and derives spending key
+        let scanner = StealthScanner(keyPair: receiverKeyPair)
+        let detected = try scanner.scanTransaction(
+            stealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey
+        )
+        XCTAssertNotNil(detected)
+
+        // 4. Create stealth wallet from derived spending key
+        let stealthWallet = try SolanaWallet(stealthScalar: detected!.spendingPrivateKey)
+
+        // 5. Verify the wallet address matches the stealth address
+        let walletAddress = await stealthWallet.address
+        XCTAssertEqual(walletAddress, stealthResult.stealthAddress,
+                       "Stealth wallet address should match derived stealth address")
+
+        // 6. Sign a test message
+        let testMessage = Data("Test transaction message".utf8)
+        let signature = try await stealthWallet.sign(testMessage)
+
+        // 7. Verify signature is 64 bytes (ed25519)
+        XCTAssertEqual(signature.count, 64, "ed25519 signature should be 64 bytes")
+
+        // 8. Verify the signature is valid using libsodium verify
+        let publicKey = await stealthWallet.publicKeyData
+        let isValid = verifySodiumSignature(
+            signature: signature,
+            message: testMessage,
+            publicKey: publicKey
+        )
+        XCTAssertTrue(isValid, "Signature should verify against the stealth public key")
+    }
+
+    /// Test that stealth wallet correctly detects scalar mode
+    func testStealthWalletIsScalarMode() async throws {
+        // Stealth scalar wallet
+        let receiverKeyPair = try StealthKeyPair.generate()
+        let stealthResult = try StealthAddressGenerator.generateStealthAddress(
+            spendingPublicKey: receiverKeyPair.spendingPublicKey,
+            viewingPublicKey: receiverKeyPair.viewingPublicKey
+        )
+        let scanner = StealthScanner(keyPair: receiverKeyPair)
+        let detected = try scanner.scanTransaction(
+            stealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey
+        )!
+
+        let stealthWallet = try SolanaWallet(stealthScalar: detected.spendingPrivateKey)
+        let isScalar = await stealthWallet.isStealthScalarWallet
+        XCTAssertTrue(isScalar, "Stealth wallet should detect scalar mode")
+
+        // Regular seed-based wallet
+        let regularWallet = try SolanaWallet(wordCount: 12)
+        let isRegularScalar = await regularWallet.isStealthScalarWallet
+        XCTAssertFalse(isRegularScalar, "Regular wallet should not be in scalar mode")
+    }
+
+    /// Test hybrid stealth wallet signing
+    func testHybridStealthScalarWalletSigning() async throws {
+        // 1. Generate receiver keypair with post-quantum keys
+        let receiverKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
+        XCTAssertTrue(receiverKeyPair.hasPostQuantum)
+
+        // 2. Sender generates hybrid stealth address
+        let stealthResult = try StealthAddressGenerator.generateHybridStealthAddress(
+            spendingPublicKey: receiverKeyPair.spendingPublicKey,
+            viewingPublicKey: receiverKeyPair.viewingPublicKey,
+            mlkemPublicKey: receiverKeyPair.mlkemPublicKey!
+        )
+
+        // 3. Receiver detects and derives spending key
+        let scanner = StealthScanner(keyPair: receiverKeyPair)
+        let detected = try scanner.scanHybridTransaction(
+            stealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey,
+            mlkemCiphertext: stealthResult.mlkemCiphertext!
+        )
+        XCTAssertNotNil(detected)
+
+        // 4. Create stealth wallet from derived spending key
+        let stealthWallet = try SolanaWallet(stealthScalar: detected!.spendingPrivateKey)
+
+        // 5. Verify the wallet address matches
+        let walletAddress = await stealthWallet.address
+        XCTAssertEqual(walletAddress, stealthResult.stealthAddress)
+
+        // 6. Sign and verify
+        let testMessage = Data("Hybrid stealth transaction".utf8)
+        let signature = try await stealthWallet.sign(testMessage)
+        let publicKey = await stealthWallet.publicKeyData
+
+        let isValid = verifySodiumSignature(
+            signature: signature,
+            message: testMessage,
+            publicKey: publicKey
+        )
+        XCTAssertTrue(isValid, "Hybrid stealth signature should verify")
+    }
+
+    // MARK: - Helper
+
+    /// Verify an ed25519 signature using libsodium (detached signature)
+    private func verifySodiumSignature(signature: Data, message: Data, publicKey: Data) -> Bool {
+        guard signature.count == 64, publicKey.count == 32 else { return false }
+
+        // Use libsodium's detached signature verification
+        let sodium = Sodium()
+        return sodium.sign.verify(
+            message: Array(message),
+            publicKey: Array(publicKey),
+            signature: Array(signature)
+        )
     }
 }

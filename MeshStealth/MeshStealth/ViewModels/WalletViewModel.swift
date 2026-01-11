@@ -158,6 +158,7 @@ class WalletViewModel: ObservableObject {
 
         isShielding = true
         shieldError = nil
+        defer { isShielding = false }  // Always reset flag
 
         do {
             let result = try await walletManager.shieldSol(sol)
@@ -166,8 +167,6 @@ class WalletViewModel: ObservableObject {
             shieldError = error.localizedDescription
             throw error
         }
-
-        isShielding = false
     }
 
     /// Check if shield is available (has main wallet balance)
@@ -188,6 +187,7 @@ class WalletViewModel: ObservableObject {
 
         isUnshielding = true
         unshieldError = nil
+        defer { isUnshielding = false }  // Always reset flag
 
         do {
             let results = try await walletManager.unshieldAll()
@@ -196,14 +196,13 @@ class WalletViewModel: ObservableObject {
             unshieldError = error.localizedDescription
             throw error
         }
-
-        isUnshielding = false
     }
 
     /// Unshield a specific payment
     func unshield(payment: PendingPayment, sol: Double? = nil) async throws {
         isUnshielding = true
         unshieldError = nil
+        defer { isUnshielding = false }  // Always reset flag
 
         do {
             let result = try await walletManager.unshieldSol(sol, payment: payment)
@@ -212,8 +211,6 @@ class WalletViewModel: ObservableObject {
             unshieldError = error.localizedDescription
             throw error
         }
-
-        isUnshielding = false
     }
 
     /// Check if unshield is available (has stealth balance)
