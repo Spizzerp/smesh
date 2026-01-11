@@ -198,17 +198,54 @@ public class StealthWalletManager: ObservableObject {
     }
 
     /// Initialize or restore the main Solana wallet
+    /// Priority: 1) Stored mnemonic, 2) Stored secret key, 3) Generate new
     private func initializeMainWallet() async throws {
-        if let storedKey = try keychainService.loadMainWalletKey() {
-            mainWallet = try SolanaWallet(privateKeyData: storedKey)
-        } else {
-            let newWallet = SolanaWallet()
-            let privateKey = await newWallet.privateKeyData
-            try keychainService.storeMainWalletKey(privateKey)
+        // Try to restore from mnemonic first (preferred)
+        if let mnemonic = try keychainService.loadMnemonic() {
+            mainWallet = try SolanaWallet(mnemonic: mnemonic)
+        }
+        // Fall back to stored secret key (legacy or mnemonic-less restore)
+        else if let storedKey = try keychainService.loadMainWalletKey() {
+            mainWallet = try SolanaWallet(secretKey: storedKey)
+        }
+        // Generate new wallet with mnemonic
+        else {
+            let newWallet = try SolanaWallet(wordCount: 12)
+
+            // Store mnemonic for backup
+            if let mnemonic = await newWallet.mnemonic {
+                try keychainService.storeMnemonic(mnemonic)
+            }
+
+            // Also store secret key for quick restore
+            let secretKey = await newWallet.secretKeyData
+            try keychainService.storeMainWalletKey(secretKey)
+
             mainWallet = newWallet
         }
 
         // Refresh balance
+        await refreshMainWalletBalance()
+    }
+
+    /// Get the wallet mnemonic for backup (if available)
+    public var walletMnemonic: [String]? {
+        get async {
+            await mainWallet?.mnemonic
+        }
+    }
+
+    /// Import wallet from mnemonic phrase
+    /// - Parameter mnemonic: Array of BIP-39 words
+    public func importWallet(mnemonic: [String]) async throws {
+        let wallet = try SolanaWallet(mnemonic: mnemonic)
+
+        // Store mnemonic and secret key
+        try keychainService.storeMnemonic(mnemonic)
+        let secretKey = await wallet.secretKeyData
+        try keychainService.storeMainWalletKey(secretKey)
+
+        mainWallet = wallet
         await refreshMainWalletBalance()
     }
 
@@ -471,6 +508,54 @@ public class StealthWalletManager: ObservableObject {
             .reduce(0) { $0 + $1.amount }
     }
 
+    // MARK: - Shield Operations
+
+    private var shieldService: ShieldService?
+
+    /// Shield funds from main wallet to a stealth address (self-deposit)
+    /// - Parameter lamports: Amount to shield in lamports
+    /// - Returns: ShieldResult with transaction details
+    public func shield(lamports: UInt64) async throws -> ShieldResult {
+        guard let mainWallet = mainWallet, let keyPair = keyPair else {
+            throw WalletError.notInitialized
+        }
+
+        if shieldService == nil {
+            shieldService = ShieldService(rpcClient: faucet)
+        }
+
+        let result = try await shieldService!.shield(
+            lamports: lamports,
+            mainWallet: mainWallet,
+            stealthKeyPair: keyPair
+        )
+
+        // Add as pending payment (so it shows in stealth balance)
+        let payment = PendingPayment(
+            stealthAddress: result.stealthAddress,
+            ephemeralPublicKey: result.ephemeralPublicKey,
+            mlkemCiphertext: result.mlkemCiphertext,
+            amount: result.amount,
+            tokenMint: nil,
+            viewTag: result.viewTag,
+            status: .received  // Treat as received since it's confirmed on-chain
+        )
+        addPendingPayment(payment)
+
+        // Refresh main wallet balance
+        await refreshMainWalletBalance()
+
+        return result
+    }
+
+    /// Shield funds with amount in SOL (convenience)
+    /// - Parameter sol: Amount to shield in SOL
+    /// - Returns: ShieldResult with transaction details
+    public func shieldSol(_ sol: Double) async throws -> ShieldResult {
+        let lamports = UInt64(sol * 1_000_000_000)
+        return try await shield(lamports: lamports)
+    }
+
     // MARK: - Reset
 
     /// Clear all wallet data (for testing/reset)
@@ -497,6 +582,9 @@ public enum WalletError: Error, LocalizedError {
     case keyDerivationFailed
     case paymentNotFound
     case alreadySettled
+    case invalidMnemonic
+    case invalidKeyLength
+    case signingFailed
 
     public var errorDescription: String? {
         switch self {
@@ -508,6 +596,12 @@ public enum WalletError: Error, LocalizedError {
             return "Payment not found"
         case .alreadySettled:
             return "Payment has already been settled"
+        case .invalidMnemonic:
+            return "Invalid mnemonic phrase"
+        case .invalidKeyLength:
+            return "Invalid key length (expected 32 or 64 bytes)"
+        case .signingFailed:
+            return "Failed to sign message"
         }
     }
 }

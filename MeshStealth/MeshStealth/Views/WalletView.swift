@@ -4,28 +4,52 @@ import StealthCore
 struct WalletView: View {
     @EnvironmentObject var walletViewModel: WalletViewModel
     @EnvironmentObject var meshViewModel: MeshViewModel
-    @State private var showingAirdropAlert = false
+
     @State private var airdropError: Error?
     @State private var airdropSuccess = false
+
+    // Shield/Unshield UI state
+    @State private var showShieldInput = false
+    @State private var showUnshieldInput = false
+    @State private var shieldAmount = ""
+    @State private var shieldError: String?
+    @State private var shieldSuccess = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 24) {
-                    // Main Wallet Card (for funding)
+                VStack(spacing: 16) {
+                    // Main Wallet Card (for funding) - with Unshield input
                     MainWalletCard(
                         address: walletViewModel.mainWalletAddress,
                         balance: walletViewModel.formattedMainWalletBalance,
                         network: walletViewModel.network,
                         isAirdropping: walletViewModel.isAirdropping,
+                        showUnshieldInput: $showUnshieldInput,
+                        unshieldAmount: $shieldAmount,
                         onAirdrop: requestAirdrop,
-                        onRefresh: { Task { await walletViewModel.refreshBalance() } }
+                        onRefresh: { Task { await walletViewModel.refreshBalance() } },
+                        onUnshieldConfirm: performUnshield
                     )
 
-                    // Stealth Balance Card
+                    // Shield/Unshield Buttons
+                    ShieldUnshieldButtons(
+                        showShieldInput: $showShieldInput,
+                        showUnshieldInput: $showUnshieldInput,
+                        canShield: walletViewModel.canShield,
+                        canUnshield: walletViewModel.stealthBalance > 0,
+                        isShielding: walletViewModel.isShielding
+                    )
+
+                    // Stealth Balance Card - with Shield input
                     StealthBalanceCard(
                         balance: walletViewModel.formattedBalance,
-                        hasPostQuantum: walletViewModel.hasPostQuantum
+                        hasPostQuantum: walletViewModel.hasPostQuantum,
+                        showShieldInput: $showShieldInput,
+                        shieldAmount: $shieldAmount,
+                        maxShieldAmount: walletViewModel.maxShieldAmount,
+                        isShielding: walletViewModel.isShielding,
+                        onShieldConfirm: performShield
                     )
 
                     // Status indicators
@@ -34,26 +58,6 @@ struct WalletView: View {
                         peerCount: meshViewModel.peerCount,
                         hasPostQuantum: walletViewModel.hasPostQuantum
                     )
-
-                    // Quick Actions
-                    HStack(spacing: 16) {
-                        QuickActionButton(
-                            title: "Request",
-                            icon: "arrow.down.circle.fill",
-                            color: .green
-                        ) {
-                            // Show receive sheet
-                        }
-
-                        QuickActionButton(
-                            title: "Send",
-                            icon: "arrow.up.circle.fill",
-                            color: .blue
-                        ) {
-                            // Navigate to nearby peers
-                        }
-                    }
-                    .padding(.horizontal)
 
                     // Recent Activity
                     RecentActivitySection(
@@ -77,6 +81,18 @@ struct WalletView: View {
                     Text(error.localizedDescription)
                 }
             }
+            .alert("Shield Successful!", isPresented: $shieldSuccess) {
+                Button("OK") { }
+            } message: {
+                Text("Funds have been moved to your stealth balance")
+            }
+            .alert("Shield Failed", isPresented: .constant(shieldError != nil)) {
+                Button("OK") { shieldError = nil }
+            } message: {
+                if let error = shieldError {
+                    Text(error)
+                }
+            }
         }
     }
 
@@ -90,6 +106,29 @@ struct WalletView: View {
             }
         }
     }
+
+    private func performShield() {
+        guard let amount = Double(shieldAmount), amount > 0 else { return }
+
+        Task {
+            do {
+                try await walletViewModel.shield(sol: amount)
+                shieldAmount = ""
+                showShieldInput = false
+                shieldSuccess = true
+            } catch {
+                shieldError = error.localizedDescription
+            }
+        }
+    }
+
+    private func performUnshield() {
+        // Unshield is more complex - requires stealth key derivation
+        // For now, show a message that it's not yet implemented
+        shieldError = "Unshield is coming soon. This requires deriving the spending key for each stealth address."
+        showUnshieldInput = false
+        shieldAmount = ""
+    }
 }
 
 // MARK: - Components
@@ -99,8 +138,11 @@ struct MainWalletCard: View {
     let balance: String
     let network: SolanaNetwork
     let isAirdropping: Bool
+    @Binding var showUnshieldInput: Bool
+    @Binding var unshieldAmount: String
     let onAirdrop: () -> Void
     let onRefresh: () -> Void
+    let onUnshieldConfirm: () -> Void
 
     @State private var showCopied = false
 
@@ -111,12 +153,20 @@ struct MainWalletCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Main Wallet")
                         .font(.headline)
-                    Text(network.rawValue)
+                    Text("Funding Address")
                         .font(.caption)
-                        .foregroundColor(.orange)
+                        .foregroundColor(.secondary)
                 }
 
                 Spacer()
+
+                Text(network.rawValue)
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.orange.opacity(0.15))
+                    .cornerRadius(6)
 
                 Button(action: onRefresh) {
                     Image(systemName: "arrow.clockwise")
@@ -140,7 +190,7 @@ struct MainWalletCard: View {
                 } label: {
                     HStack {
                         Text(truncateAddress(address))
-                            .font(.caption)
+                            .font(.caption.monospaced())
                             .foregroundColor(.secondary)
                         Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
                             .font(.caption)
@@ -149,8 +199,25 @@ struct MainWalletCard: View {
                 }
             }
 
+            // Info text
+            Text("Send SOL from exchanges or other wallets here")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+
+            // Unshield amount input (shown when Unshield button tapped)
+            if showUnshieldInput {
+                AmountInputSection(
+                    label: "Receiving",
+                    amount: $unshieldAmount,
+                    placeholder: "0.0",
+                    onConfirm: onUnshieldConfirm,
+                    onCancel: { showUnshieldInput = false; unshieldAmount = "" }
+                )
+            }
+
             // Airdrop Button (devnet only)
-            if network == .devnet {
+            if network == .devnet && !showUnshieldInput {
                 Button(action: onAirdrop) {
                     HStack {
                         if isAirdropping {
@@ -191,17 +258,31 @@ struct MainWalletCard: View {
 struct StealthBalanceCard: View {
     let balance: String
     let hasPostQuantum: Bool
+    @Binding var showShieldInput: Bool
+    @Binding var shieldAmount: String
+    let maxShieldAmount: Double
+    let isShielding: Bool
+    let onShieldConfirm: () -> Void
 
     var body: some View {
         VStack(spacing: 12) {
             HStack {
-                Text("Stealth Balance")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Stealth Balance")
+                        .font(.headline)
+                    Text("Private Funds")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 Spacer()
                 if hasPostQuantum {
-                    Label("PQ", systemImage: "lock.shield.fill")
+                    Label("Post-Quantum", systemImage: "lock.shield.fill")
                         .font(.caption)
                         .foregroundColor(.purple)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.purple.opacity(0.15))
+                        .cornerRadius(6)
                 }
             }
 
@@ -209,9 +290,24 @@ struct StealthBalanceCard: View {
                 .font(.system(size: 28, weight: .bold, design: .rounded))
                 .foregroundColor(.primary)
 
-            Text("Received via mesh (pending settlement)")
+            Text("Received via mesh payments or shielded from main wallet")
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+
+            // Shield amount input (shown when Shield button tapped)
+            if showShieldInput {
+                AmountInputSection(
+                    label: "Shield",
+                    amount: $shieldAmount,
+                    placeholder: "0.0",
+                    maxLabel: String(format: "Max: %.4f SOL", maxShieldAmount),
+                    isLoading: isShielding,
+                    onConfirm: onShieldConfirm,
+                    onCancel: { showShieldInput = false; shieldAmount = "" },
+                    onMax: { shieldAmount = String(format: "%.4f", maxShieldAmount) }
+                )
+            }
         }
         .padding()
         .background(
@@ -223,6 +319,147 @@ struct StealthBalanceCard: View {
                 )
         )
         .padding(.horizontal)
+    }
+}
+
+// MARK: - Shield/Unshield Buttons
+
+struct ShieldUnshieldButtons: View {
+    @Binding var showShieldInput: Bool
+    @Binding var showUnshieldInput: Bool
+    let canShield: Bool
+    let canUnshield: Bool
+    let isShielding: Bool
+
+    var body: some View {
+        HStack(spacing: 32) {
+            // Shield button (down arrow)
+            Button {
+                showUnshieldInput = false
+                showShieldInput.toggle()
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 40))
+                        .foregroundColor(canShield ? .blue : .gray)
+                    Text("Shield")
+                        .font(.caption)
+                        .foregroundColor(canShield ? .blue : .gray)
+                }
+            }
+            .disabled(!canShield || isShielding)
+
+            // Unshield button (up arrow)
+            Button {
+                showShieldInput = false
+                showUnshieldInput.toggle()
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 40))
+                        .foregroundColor(canUnshield ? .green : .gray)
+                    Text("Unshield")
+                        .font(.caption)
+                        .foregroundColor(canUnshield ? .green : .gray)
+                }
+            }
+            .disabled(!canUnshield || isShielding)
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+// MARK: - Amount Input Section
+
+struct AmountInputSection: View {
+    let label: String
+    @Binding var amount: String
+    let placeholder: String
+    var maxLabel: String? = nil
+    var isLoading: Bool = false
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+    var onMax: (() -> Void)? = nil
+
+    @FocusState private var isTextFieldFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Amount input
+            HStack {
+                Text(label + ":")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                TextField(placeholder, text: $amount)
+                    .keyboardType(.decimalPad)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 100)
+                    .focused($isTextFieldFocused)
+
+                Text("SOL")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                if let onMax = onMax {
+                    Button("Max") {
+                        onMax()
+                    }
+                    .font(.caption)
+                    .foregroundColor(.blue)
+                }
+            }
+
+            if let maxLabel = maxLabel {
+                Text(maxLabel)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            // Confirm/Cancel buttons
+            HStack(spacing: 12) {
+                Button("Cancel") {
+                    isTextFieldFocused = false
+                    onCancel()
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color(.systemGray5))
+                .cornerRadius(8)
+                .disabled(isLoading)
+
+                Button {
+                    isTextFieldFocused = false
+                    onConfirm()
+                } label: {
+                    HStack {
+                        if isLoading {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        }
+                        Text(isLoading ? "Processing..." : "Confirm")
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(isLoading ? Color.gray : Color.blue)
+                .cornerRadius(8)
+                .disabled(isLoading || amount.isEmpty)
+            }
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+        .onAppear {
+            // Auto-focus the text field when section appears
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                isTextFieldFocused = true
+            }
+        }
     }
 }
 

@@ -24,7 +24,8 @@ public final class KeychainService: @unchecked Sendable {
         case mlkemPrivateKey = "stealth.mlkem.private"  // ~2400 bytes for hybrid mode
         case metaAddressPublic = "stealth.meta.public"
         case hybridMetaAddressPublic = "stealth.hybridmeta.public"  // 1248 bytes
-        case mainWalletPrivateKey = "wallet.main.private"  // 32 bytes
+        case mainWalletPrivateKey = "wallet.main.private"  // 64 bytes (ed25519 secret key)
+        case mainWalletMnemonic = "wallet.main.mnemonic"  // BIP-39 mnemonic phrase
     }
 
     /// Initialize with custom service identifier
@@ -178,6 +179,39 @@ public final class KeychainService: @unchecked Sendable {
     /// - Returns: true if a main wallet is stored
     public func hasMainWallet() -> Bool {
         (try? loadData(account: .mainWalletPrivateKey)) != nil
+    }
+
+    // MARK: - Mnemonic Storage
+
+    /// Store the main wallet mnemonic phrase
+    /// - Parameter phrase: Array of BIP-39 words
+    /// - Throws: StealthError.keychainError if storage fails
+    public func storeMnemonic(_ phrase: [String]) throws {
+        let data = phrase.joined(separator: " ").data(using: .utf8)!
+        try storeData(data, account: .mainWalletMnemonic)
+    }
+
+    /// Load the main wallet mnemonic phrase
+    /// - Returns: Array of mnemonic words or nil if not stored
+    /// - Throws: StealthError if keychain access fails
+    public func loadMnemonic() throws -> [String]? {
+        guard let data = try loadData(account: .mainWalletMnemonic),
+              let phrase = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return phrase.split(separator: " ").map(String.init)
+    }
+
+    /// Delete the mnemonic phrase
+    /// - Throws: StealthError.keychainError if deletion fails
+    public func deleteMnemonic() throws {
+        try deleteData(account: .mainWalletMnemonic)
+    }
+
+    /// Check if a mnemonic exists in the Keychain
+    /// - Returns: true if a mnemonic is stored
+    public func hasMnemonic() -> Bool {
+        (try? loadData(account: .mainWalletMnemonic)) != nil
     }
 
     // MARK: - Generic Data Storage

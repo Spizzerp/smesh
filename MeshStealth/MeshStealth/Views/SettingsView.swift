@@ -7,6 +7,7 @@ struct SettingsView: View {
 
     @State private var showingResetConfirmation = false
     @State private var showingMetaAddress = false
+    @State private var showingBackupWallet = false
 
     var body: some View {
         NavigationStack {
@@ -18,7 +19,7 @@ struct SettingsView: View {
                         showingMetaAddress = true
                     } label: {
                         HStack {
-                            Label("My Address", systemImage: "qrcode")
+                            Label("Stealth Address", systemImage: "eye.slash")
                             Spacer()
                             Text(truncatedAddress)
                                 .font(.caption)
@@ -44,6 +45,20 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+
+                    // Backup wallet
+                    Button {
+                        showingBackupWallet = true
+                    } label: {
+                        HStack {
+                            Label("Backup Wallet", systemImage: "key.horizontal")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .foregroundColor(.primary)
                 } header: {
                     Text("Wallet")
                 }
@@ -129,6 +144,9 @@ struct SettingsView: View {
                     isHybrid: walletViewModel.hasPostQuantum
                 )
             }
+            .sheet(isPresented: $showingBackupWallet) {
+                WalletBackupView()
+            }
             .confirmationDialog(
                 "Reset Wallet",
                 isPresented: $showingResetConfirmation,
@@ -163,21 +181,48 @@ struct MetaAddressSheet: View {
             VStack(spacing: 24) {
                 // Header
                 VStack(spacing: 8) {
-                    Image(systemName: isHybrid ? "lock.shield.fill" : "key.fill")
+                    Image(systemName: isHybrid ? "lock.shield.fill" : "eye.slash.fill")
                         .font(.system(size: 50))
                         .foregroundColor(isHybrid ? .purple : .blue)
 
-                    Text("Your Payment Address")
+                    Text("Your Stealth Address")
                         .font(.title2)
                         .fontWeight(.bold)
+
+                    Text("For private mesh payments")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
 
                     if isHybrid {
                         Label("Post-Quantum Secure", systemImage: "checkmark.shield")
                             .font(.caption)
                             .foregroundColor(.purple)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.purple.opacity(0.15))
+                            .cornerRadius(8)
                     }
                 }
                 .padding(.top)
+
+                // Important distinction
+                VStack(spacing: 8) {
+                    HStack {
+                        Image(systemName: "info.circle.fill")
+                            .foregroundColor(.blue)
+                        Text("This is different from your Main Wallet address")
+                            .font(.subheadline.weight(.medium))
+                    }
+
+                    Text("Share this stealth address with nearby peers to receive private payments via Bluetooth mesh. Each payment creates a unique one-time address that only you can detect.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+                .background(Color.blue.opacity(0.1))
+                .cornerRadius(12)
+                .padding(.horizontal)
 
                 // Address display
                 VStack(spacing: 12) {
@@ -199,10 +244,11 @@ struct MetaAddressSheet: View {
                             copied = false
                         }
                     } label: {
-                        Label(copied ? "Copied!" : "Copy Address", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        Label(copied ? "Copied!" : "Copy Stealth Address", systemImage: copied ? "checkmark" : "doc.on.doc")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(.purple)
                     .padding(.horizontal)
                 }
 
@@ -210,11 +256,15 @@ struct MetaAddressSheet: View {
                 VStack(alignment: .leading, spacing: 8) {
                     InfoRow(
                         icon: "antenna.radiowaves.left.and.right",
-                        text: "Share this address with nearby peers"
+                        text: "Share with nearby peers via Bluetooth mesh"
                     )
                     InfoRow(
                         icon: "eye.slash",
-                        text: "Each payment creates a unique stealth address"
+                        text: "Payments are unlinkable - each uses a unique address"
+                    )
+                    InfoRow(
+                        icon: "wallet.pass",
+                        text: "Different from Main Wallet (funding address)"
                     )
                     if isHybrid {
                         InfoRow(
@@ -232,7 +282,7 @@ struct MetaAddressSheet: View {
 
                 Spacer()
             }
-            .navigationTitle("Address")
+            .navigationTitle("Stealth Address")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

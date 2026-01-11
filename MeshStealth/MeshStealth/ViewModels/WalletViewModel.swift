@@ -20,6 +20,11 @@ class WalletViewModel: ObservableObject {
     @Published var isAirdropping = false
     @Published var lastSyncAt: Date?
 
+    // Shield State
+    @Published var isShielding = false
+    @Published var shieldError: String?
+    @Published var lastShieldResult: ShieldResult?
+
     /// Current network (for UI display)
     let network: SolanaNetwork = .devnet
 
@@ -137,6 +142,51 @@ class WalletViewModel: ObservableObject {
     /// Stealth balance (alias for clarity in UI)
     var stealthBalance: Double {
         pendingBalance
+    }
+
+    // MARK: - Shield Operations
+
+    /// Shield funds from main wallet to stealth address
+    /// - Parameter sol: Amount in SOL to shield
+    func shield(sol: Double) async throws {
+        guard sol > 0 else { return }
+
+        isShielding = true
+        shieldError = nil
+
+        do {
+            let result = try await walletManager.shieldSol(sol)
+            lastShieldResult = result
+        } catch {
+            shieldError = error.localizedDescription
+            throw error
+        }
+
+        isShielding = false
+    }
+
+    /// Check if shield is available (has main wallet balance)
+    var canShield: Bool {
+        mainWalletBalance > 0.000005  // Need at least fee amount
+    }
+
+    /// Maximum amount that can be shielded (balance minus estimated fee)
+    var maxShieldAmount: Double {
+        max(0, mainWalletBalance - 0.000005)
+    }
+
+    // MARK: - Mnemonic / Backup
+
+    /// Get the wallet mnemonic for backup display
+    func getMnemonic() async -> [String]? {
+        await walletManager.walletMnemonic
+    }
+
+    /// Import wallet from mnemonic phrase
+    func importWallet(mnemonic: [String]) async throws {
+        try await walletManager.importWallet(mnemonic: mnemonic)
+        // Refresh the main wallet address after import
+        mainWalletAddress = await walletManager.mainWalletAddress
     }
 }
 

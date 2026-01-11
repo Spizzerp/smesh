@@ -29,8 +29,11 @@ public actor DevnetFaucet {
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
-        // Check HTTP status
+        // Check HTTP status - specifically handle 429 rate limiting
         if let httpResponse = response as? HTTPURLResponse {
+            if httpResponse.statusCode == 429 {
+                throw FaucetError.rateLimited
+            }
             guard (200...299).contains(httpResponse.statusCode) else {
                 throw FaucetError.httpError(statusCode: httpResponse.statusCode)
             }
@@ -86,6 +89,82 @@ public actor DevnetFaucet {
         }
 
         return rpcResponse.result?.value ?? 0
+    }
+
+    /// Get recent blockhash for transaction construction
+    /// - Returns: Base58-encoded blockhash
+    public func getRecentBlockhash() async throws -> String {
+        let body: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getLatestBlockhash",
+            "params": [["commitment": "confirmed"]]
+        ]
+
+        var request = URLRequest(url: rpcEndpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse {
+            guard (200...299).contains(httpResponse.statusCode) else {
+                throw FaucetError.httpError(statusCode: httpResponse.statusCode)
+            }
+        }
+
+        let rpcResponse = try JSONDecoder().decode(FaucetBlockhashResponse.self, from: data)
+
+        if let error = rpcResponse.error {
+            throw FaucetError.rpcError(code: error.code, message: error.message)
+        }
+
+        guard let blockhash = rpcResponse.result?.value.blockhash else {
+            throw FaucetError.rpcError(code: -1, message: "No blockhash returned")
+        }
+
+        return blockhash
+    }
+
+    /// Send a signed transaction to the network
+    /// - Parameter signedTransaction: Base64-encoded signed transaction
+    /// - Returns: Transaction signature
+    public func sendTransaction(_ signedTransaction: String) async throws -> String {
+        let body: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendTransaction",
+            "params": [
+                signedTransaction,
+                ["encoding": "base64", "preflightCommitment": "confirmed"]
+            ]
+        ]
+
+        var request = URLRequest(url: rpcEndpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse {
+            guard (200...299).contains(httpResponse.statusCode) else {
+                throw FaucetError.httpError(statusCode: httpResponse.statusCode)
+            }
+        }
+
+        let rpcResponse = try JSONDecoder().decode(SendTransactionResponse.self, from: data)
+
+        if let error = rpcResponse.error {
+            throw FaucetError.rpcError(code: error.code, message: error.message)
+        }
+
+        guard let signature = rpcResponse.result else {
+            throw FaucetError.noSignature
+        }
+
+        return signature
     }
 
     /// Wait for a transaction to be confirmed
@@ -147,6 +226,30 @@ struct BalanceResult: Decodable {
     let value: UInt64
 }
 
+private struct FaucetBlockhashResponse: Decodable {
+    let jsonrpc: String
+    let id: Int
+    let result: FaucetBlockhashResultWrapper?
+    let error: RPCError?
+}
+
+private struct FaucetBlockhashResultWrapper: Decodable {
+    let context: RPCContext?
+    let value: FaucetBlockhashValue
+}
+
+private struct FaucetBlockhashValue: Decodable {
+    let blockhash: String
+    let lastValidBlockHeight: UInt64
+}
+
+private struct SendTransactionResponse: Decodable {
+    let jsonrpc: String
+    let id: Int
+    let result: String?
+    let error: RPCError?
+}
+
 struct RPCContext: Decodable {
     let slot: UInt64?
     let apiVersion: String?
@@ -200,7 +303,7 @@ public enum FaucetError: Error, LocalizedError {
         case .noSignature:
             return "No signature returned from airdrop request"
         case .rateLimited:
-            return "Rate limited - please wait before requesting another airdrop"
+            return "Rate limited by devnet faucet. Try again in 24 hours, or fund from an external wallet (copy your address and use a web faucet)."
         case .confirmationTimeout:
             return "Transaction confirmation timed out"
         }
