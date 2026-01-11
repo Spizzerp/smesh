@@ -122,6 +122,18 @@ public actor MeshNode {
         paymentReceivedSubject.eraseToAnyPublisher()
     }
 
+    /// Publisher for meta-address requests (when someone wants our address)
+    private nonisolated(unsafe) let metaAddressRequestSubject = PassthroughSubject<MetaAddressRequest, Never>()
+    public nonisolated var metaAddressRequests: AnyPublisher<MetaAddressRequest, Never> {
+        metaAddressRequestSubject.eraseToAnyPublisher()
+    }
+
+    /// Publisher for meta-address responses (when we receive someone's address)
+    private nonisolated(unsafe) let metaAddressResponseSubject = PassthroughSubject<MetaAddressResponse, Never>()
+    public nonisolated var metaAddressResponses: AnyPublisher<MetaAddressResponse, Never> {
+        metaAddressResponseSubject.eraseToAnyPublisher()
+    }
+
     public init(
         peerID: String = UUID().uuidString,
         capabilities: PeerCapabilities = PeerCapabilities()
@@ -221,6 +233,12 @@ public actor MeshNode {
 
         case .heartbeat:
             return .processed
+
+        case .metaAddressRequest:
+            return processMetaAddressRequest(message)
+
+        case .metaAddressResponse:
+            return processMetaAddressResponse(message)
         }
     }
 
@@ -263,6 +281,30 @@ public actor MeshNode {
             peers[message.originPeerID] = peer
         }
         // Note: New peer creation happens in BLEMeshService when peripheral is discovered
+
+        return .processed
+    }
+
+    private func processMetaAddressRequest(_ message: MeshMessage) -> ProcessResult {
+        // Meta-address requests are not relayed (direct peer-to-peer only)
+        guard let request = try? message.decodeMetaAddressRequest() else {
+            return .invalid
+        }
+
+        // Notify via publisher so app can respond
+        metaAddressRequestSubject.send(request)
+
+        return .processed
+    }
+
+    private func processMetaAddressResponse(_ message: MeshMessage) -> ProcessResult {
+        // Meta-address responses are not relayed (direct peer-to-peer only)
+        guard let response = try? message.decodeMetaAddressResponse() else {
+            return .invalid
+        }
+
+        // Notify via publisher so app can use the received address
+        metaAddressResponseSubject.send(response)
 
         return .processed
     }

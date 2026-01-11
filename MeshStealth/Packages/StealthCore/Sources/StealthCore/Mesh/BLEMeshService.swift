@@ -186,6 +186,45 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
         return (peripheralsToSend, messageCharacteristic, peripheralManager)
     }
 
+    /// Send a message to a specific peer
+    public func sendToPeer(_ message: MeshMessage, peerID: String) async throws {
+        let data = try message.serialize()
+
+        // Check size
+        guard data.count <= 4096 else {
+            throw MeshError.payloadTooLarge(size: data.count, max: 4096)
+        }
+
+        // Find the peripheral for this peer
+        let targetPeripheral = getPeripheralForPeer(peerID: peerID)
+
+        guard let (peripheral, characteristic) = targetPeripheral else {
+            throw MeshError.peerNotFound(peerID)
+        }
+
+        // Send to the specific peer
+        peripheral.writeValue(data, for: characteristic, type: .withResponse)
+
+        await meshNode.recordMessageSent(bytes: data.count)
+    }
+
+    /// Thread-safe helper to get a specific peer's peripheral
+    private func getPeripheralForPeer(peerID: String) -> (CBPeripheral, CBCharacteristic)? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        // Find the peripheral UUID that matches this peer ID
+        for (uuid, peripheral) in connectedPeripherals {
+            if uuid.uuidString == peerID || peripheral.identifier.uuidString == peerID {
+                if let characteristic = peripheralCharacteristics[uuid] {
+                    return (peripheral, characteristic)
+                }
+            }
+        }
+
+        return nil
+    }
+
     /// Get the current mesh node
     public func getNode() -> MeshNode {
         meshNode

@@ -115,6 +115,63 @@ public enum MeshMessageType: UInt8, Codable, Sendable {
 
     /// Heartbeat/keepalive
     case heartbeat = 4
+
+    /// Request peer's meta-address for payment
+    case metaAddressRequest = 5
+
+    /// Response with meta-address
+    case metaAddressResponse = 6
+}
+
+// MARK: - Meta-Address Exchange Payloads
+
+/// Request for a peer's meta-address (for proximity-based payment initiation)
+public struct MetaAddressRequest: Codable, Sendable {
+    /// Requester's peer ID
+    public let requesterPeerID: String
+
+    /// Requester's display name (optional)
+    public let requesterName: String?
+
+    /// Whether requester prefers hybrid (PQ) meta-address
+    public let preferHybrid: Bool
+
+    public init(
+        requesterPeerID: String,
+        requesterName: String? = nil,
+        preferHybrid: Bool = true
+    ) {
+        self.requesterPeerID = requesterPeerID
+        self.requesterName = requesterName
+        self.preferHybrid = preferHybrid
+    }
+}
+
+/// Response containing a meta-address
+public struct MetaAddressResponse: Codable, Sendable {
+    /// Responder's peer ID
+    public let responderPeerID: String
+
+    /// Responder's display name (optional)
+    public let responderName: String?
+
+    /// The meta-address (classical or hybrid based on request)
+    public let metaAddress: String
+
+    /// Whether this is a hybrid (PQ) meta-address
+    public let isHybrid: Bool
+
+    public init(
+        responderPeerID: String,
+        responderName: String? = nil,
+        metaAddress: String,
+        isHybrid: Bool
+    ) {
+        self.responderPeerID = responderPeerID
+        self.responderName = responderName
+        self.metaAddress = metaAddress
+        self.isHybrid = isHybrid
+    }
 }
 
 /// Envelope wrapping mesh payloads with routing metadata
@@ -204,6 +261,54 @@ public struct MeshMessage: Codable, Sendable, Identifiable {
             originPeerID: peerID,
             payload: capData
         )
+    }
+
+    /// Create a meta-address request message
+    public static func metaAddressRequest(
+        request: MetaAddressRequest
+    ) throws -> MeshMessage {
+        let encoder = JSONEncoder()
+        let requestData = try encoder.encode(request)
+
+        return MeshMessage(
+            type: .metaAddressRequest,
+            ttl: 1,  // Direct peer-to-peer only
+            originPeerID: request.requesterPeerID,
+            payload: requestData
+        )
+    }
+
+    /// Create a meta-address response message
+    public static func metaAddressResponse(
+        response: MetaAddressResponse
+    ) throws -> MeshMessage {
+        let encoder = JSONEncoder()
+        let responseData = try encoder.encode(response)
+
+        return MeshMessage(
+            type: .metaAddressResponse,
+            ttl: 1,  // Direct peer-to-peer only
+            originPeerID: response.responderPeerID,
+            payload: responseData
+        )
+    }
+
+    /// Decode the meta-address request payload
+    public func decodeMetaAddressRequest() throws -> MetaAddressRequest {
+        guard type == .metaAddressRequest else {
+            throw MeshError.invalidMessageType
+        }
+        let decoder = JSONDecoder()
+        return try decoder.decode(MetaAddressRequest.self, from: payload)
+    }
+
+    /// Decode the meta-address response payload
+    public func decodeMetaAddressResponse() throws -> MetaAddressResponse {
+        guard type == .metaAddressResponse else {
+            throw MeshError.invalidMessageType
+        }
+        let decoder = JSONDecoder()
+        return try decoder.decode(MetaAddressResponse.self, from: payload)
     }
 
     /// Decrement TTL for forwarding
