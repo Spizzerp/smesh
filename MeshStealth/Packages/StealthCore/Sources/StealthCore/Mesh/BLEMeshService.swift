@@ -68,6 +68,35 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
     /// Lock for thread-safe property access
     private let lock = NSLock()
 
+    // MARK: - Throttling Configuration
+
+    /// Minimum interval between discovery updates for the same peer (seconds)
+    private let discoveryThrottleInterval: TimeInterval = 1.0
+
+    /// Minimum interval between connection attempts to the same peer (seconds)
+    private let connectionThrottleInterval: TimeInterval = 5.0
+
+    /// Scan duty cycle - how long to scan before pausing (seconds)
+    private let scanDuration: TimeInterval = 10.0
+
+    /// Scan pause - how long to pause between scan cycles (seconds)
+    private let scanPause: TimeInterval = 2.0
+
+    /// Last discovery timestamp for each peer (for throttling)
+    private var lastDiscoveryTime: [UUID: Date] = [:]
+
+    /// Last connection attempt timestamp for each peer (for throttling)
+    private var lastConnectionAttempt: [UUID: Date] = [:]
+
+    /// Pending connection peripherals (discovered but not yet connected)
+    private var pendingConnections: [UUID: CBPeripheral] = [:]
+
+    /// Scan cycle timer
+    private var scanCycleTimer: DispatchSourceTimer?
+
+    /// Whether scan is in active phase of duty cycle
+    private var isInScanPhase = false
+
     // MARK: - Initialization
 
     public init(meshNode: MeshNode, messageRelay: MessageRelay) {
@@ -240,26 +269,104 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
     private func startScanning() {
         guard centralManager.state == .poweredOn else { return }
 
+        // Start duty cycle scanning
+        startScanDutyCycle()
+    }
+
+    /// Start duty cycle scanning to reduce battery and CPU usage
+    private func startScanDutyCycle() {
+        // Cancel any existing timer
+        scanCycleTimer?.cancel()
+        scanCycleTimer = nil
+
+        // Create new timer on BLE queue
+        let timer = DispatchSource.makeTimerSource(queue: bleQueue)
+        scanCycleTimer = timer
+
+        // Start with scan phase
+        isInScanPhase = true
+        performScan()
+
+        // Set up repeating timer for duty cycle
+        let totalCycle = scanDuration + scanPause
+        timer.schedule(deadline: .now() + scanDuration, repeating: totalCycle)
+        timer.setEventHandler { [weak self] in
+            self?.toggleScanPhase()
+        }
+        timer.resume()
+    }
+
+    /// Toggle between scan and pause phases
+    private func toggleScanPhase() {
+        if isInScanPhase {
+            // End scan phase, start pause
+            centralManager.stopScan()
+            isInScanPhase = false
+            print("Scan cycle: pausing for \(scanPause)s")
+
+            // Process any pending connections during the pause
+            processPendingConnections()
+
+            // Schedule resumption of scanning
+            bleQueue.asyncAfter(deadline: .now() + scanPause) { [weak self] in
+                guard let self = self, self.isActive else { return }
+                self.isInScanPhase = true
+                self.performScan()
+            }
+        }
+    }
+
+    /// Actually perform the scan
+    private func performScan() {
+        guard centralManager.state == .poweredOn, isActive else { return }
+
         centralManager.scanForPeripherals(
             withServices: [serviceUUID],
             options: [
                 CBCentralManagerScanOptionAllowDuplicatesKey: false
             ]
         )
-        print("Started scanning for mesh peers")
+        print("Scan cycle: scanning for \(scanDuration)s")
     }
 
     private func stopScanning() {
+        // Cancel duty cycle timer
+        scanCycleTimer?.cancel()
+        scanCycleTimer = nil
+        isInScanPhase = false
+
         centralManager.stopScan()
         print("Stopped scanning")
     }
 
     private func connectToPeripheral(_ peripheral: CBPeripheral) {
+        let peripheralID = peripheral.identifier
+
         lock.lock()
-        let alreadyConnected = connectedPeripherals[peripheral.identifier] != nil
+        let alreadyConnected = connectedPeripherals[peripheralID] != nil
+        let lastAttempt = lastConnectionAttempt[peripheralID]
         lock.unlock()
 
+        // Skip if already connected
         guard !alreadyConnected else { return }
+
+        // Throttle connection attempts
+        if let lastAttempt = lastAttempt {
+            let elapsed = Date().timeIntervalSince(lastAttempt)
+            if elapsed < connectionThrottleInterval {
+                // Store for later connection attempt
+                lock.lock()
+                pendingConnections[peripheralID] = peripheral
+                lock.unlock()
+                return
+            }
+        }
+
+        // Record this connection attempt
+        lock.lock()
+        lastConnectionAttempt[peripheralID] = Date()
+        pendingConnections.removeValue(forKey: peripheralID)
+        lock.unlock()
 
         peripheral.delegate = self
         centralManager.connect(peripheral, options: nil)
@@ -272,11 +379,25 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Process pending connections that were throttled
+    private func processPendingConnections() {
+        lock.lock()
+        let pending = pendingConnections
+        lock.unlock()
+
+        for (_, peripheral) in pending {
+            connectToPeripheral(peripheral)
+        }
+    }
+
     private func disconnectAll() {
         lock.lock()
         let peripherals = Array(connectedPeripherals.values)
         connectedPeripherals.removeAll()
         peripheralCharacteristics.removeAll()
+        pendingConnections.removeAll()
+        lastConnectionAttempt.removeAll()
+        lastDiscoveryTime.removeAll()
         lock.unlock()
 
         for peripheral in peripherals {
@@ -401,6 +522,30 @@ extension BLEMeshService: CBCentralManagerDelegate {
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
+        let peripheralID = peripheral.identifier
+
+        // Throttle discovery updates for the same peer
+        lock.lock()
+        let lastDiscovery = lastDiscoveryTime[peripheralID]
+        let shouldProcess: Bool
+        if let lastDiscovery = lastDiscovery {
+            shouldProcess = Date().timeIntervalSince(lastDiscovery) >= discoveryThrottleInterval
+        } else {
+            shouldProcess = true
+        }
+
+        if shouldProcess {
+            lastDiscoveryTime[peripheralID] = Date()
+        }
+        lock.unlock()
+
+        // Skip processing if throttled (but still attempt connection)
+        guard shouldProcess else {
+            // Still try to connect even if we throttle the discovery update
+            connectToPeripheral(peripheral)
+            return
+        }
+
         let peerID = peripheral.identifier.uuidString
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name
         let rssiValue = RSSI.intValue
@@ -421,6 +566,7 @@ extension BLEMeshService: CBCentralManagerDelegate {
                 await selfRef.notifyPeerDiscovered(peer)
             } else {
                 await meshNode.updatePeer(id: peerID) { peer in
+                    peer.rssi = rssiValue
                     peer.markSeen()
                 }
             }

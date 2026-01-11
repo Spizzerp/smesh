@@ -25,6 +25,11 @@ class WalletViewModel: ObservableObject {
     @Published var shieldError: String?
     @Published var lastShieldResult: ShieldResult?
 
+    // Unshield State
+    @Published var isUnshielding = false
+    @Published var unshieldError: String?
+    @Published var lastUnshieldResults: [UnshieldResult] = []
+
     /// Current network (for UI display)
     let network: SolanaNetwork = .devnet
 
@@ -173,6 +178,55 @@ class WalletViewModel: ObservableObject {
     /// Maximum amount that can be shielded (balance minus estimated fee)
     var maxShieldAmount: Double {
         max(0, mainWalletBalance - 0.000005)
+    }
+
+    // MARK: - Unshield Operations
+
+    /// Unshield all pending payments back to main wallet
+    func unshieldAll() async throws {
+        guard canUnshield else { return }
+
+        isUnshielding = true
+        unshieldError = nil
+
+        do {
+            let results = try await walletManager.unshieldAll()
+            lastUnshieldResults = results
+        } catch {
+            unshieldError = error.localizedDescription
+            throw error
+        }
+
+        isUnshielding = false
+    }
+
+    /// Unshield a specific payment
+    func unshield(payment: PendingPayment, sol: Double? = nil) async throws {
+        isUnshielding = true
+        unshieldError = nil
+
+        do {
+            let result = try await walletManager.unshieldSol(sol, payment: payment)
+            lastUnshieldResults = [result]
+        } catch {
+            unshieldError = error.localizedDescription
+            throw error
+        }
+
+        isUnshielding = false
+    }
+
+    /// Check if unshield is available (has stealth balance)
+    var canUnshield: Bool {
+        stealthBalance > 0.000005  // Need at least fee amount
+    }
+
+    /// Maximum amount that can be unshielded (stealth balance minus estimated fees)
+    var maxUnshieldAmount: Double {
+        // Each payment needs a fee, so estimate based on number of payments
+        let feePerPayment = 0.000005
+        let totalFees = feePerPayment * Double(pendingPayments.count)
+        return max(0, stealthBalance - totalFees)
     }
 
     // MARK: - Mnemonic / Backup

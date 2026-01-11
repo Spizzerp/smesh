@@ -16,6 +16,18 @@ public struct ShieldResult: Sendable {
     public let viewTag: UInt8
 }
 
+/// Result of an unshield operation
+public struct UnshieldResult: Sendable {
+    /// The stealth address funds were taken from
+    public let stealthAddress: String
+    /// Amount unshielded in lamports
+    public let amount: UInt64
+    /// Transaction signature
+    public let signature: String
+    /// The payment ID that was unshielded
+    public let paymentId: UUID
+}
+
 /// Errors from shield operations
 public enum ShieldError: Error, LocalizedError {
     case notInitialized
@@ -23,6 +35,9 @@ public enum ShieldError: Error, LocalizedError {
     case stealthAddressGenerationFailed
     case transactionFailed(String)
     case signingFailed
+    case keyDerivationFailed
+    case paymentNotFound
+    case stealthAddressEmpty
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +53,12 @@ public enum ShieldError: Error, LocalizedError {
             return "Transaction failed: \(msg)"
         case .signingFailed:
             return "Failed to sign transaction"
+        case .keyDerivationFailed:
+            return "Failed to derive spending key for stealth address"
+        case .paymentNotFound:
+            return "Payment not found"
+        case .stealthAddressEmpty:
+            return "Stealth address has no balance"
         }
     }
 }
@@ -152,6 +173,117 @@ public actor ShieldService {
             lamports: lamports,
             mainWallet: mainWallet,
             stealthKeyPair: stealthKeyPair
+        )
+    }
+
+    // MARK: - Unshield Operations
+
+    /// Unshield funds from a stealth address back to main wallet
+    /// - Parameters:
+    ///   - payment: The pending payment to unshield
+    ///   - mainWalletAddress: The main wallet address to receive funds
+    ///   - spendingKey: The derived spending key for this stealth address (32 bytes)
+    ///   - lamports: Amount to unshield (nil = all available minus fee)
+    /// - Returns: UnshieldResult with transaction details
+    public func unshield(
+        payment: PendingPayment,
+        mainWalletAddress: String,
+        spendingKey: Data,
+        lamports: UInt64? = nil
+    ) async throws -> UnshieldResult {
+
+        // 1. Check stealth address balance
+        let stealthBalance = try await rpcClient.getBalance(address: payment.stealthAddress)
+
+        guard stealthBalance > estimatedFee else {
+            throw ShieldError.stealthAddressEmpty
+        }
+
+        // 2. Determine amount to transfer (all minus fee, or specified amount)
+        let transferAmount = lamports ?? (stealthBalance - estimatedFee)
+
+        guard stealthBalance >= transferAmount + estimatedFee else {
+            throw ShieldError.insufficientBalance(available: stealthBalance, required: transferAmount + estimatedFee)
+        }
+
+        // 3. Create wallet from spending key
+        let stealthWallet: SolanaWallet
+        do {
+            stealthWallet = try SolanaWallet(privateKeyData: spendingKey)
+        } catch {
+            throw ShieldError.keyDerivationFailed
+        }
+
+        // 4. Verify the derived wallet matches the stealth address
+        let derivedAddress = await stealthWallet.address
+        guard derivedAddress == payment.stealthAddress else {
+            throw ShieldError.keyDerivationFailed
+        }
+
+        // 5. Get recent blockhash
+        let blockhash = try await rpcClient.getRecentBlockhash()
+
+        // 6. Build transfer transaction: stealth address → main wallet
+        let fromPubkey = await stealthWallet.publicKeyData
+        guard let toPubkey = Data(base58Decoding: mainWalletAddress) else {
+            throw ShieldError.transactionFailed("Invalid main wallet address")
+        }
+
+        let message = try SolanaTransaction.buildTransfer(
+            from: fromPubkey,
+            to: toPubkey,
+            lamports: transferAmount,
+            recentBlockhash: blockhash
+        )
+
+        // 7. Sign with stealth wallet
+        let messageBytes = message.serialize()
+        let signature: Data
+        do {
+            signature = try await stealthWallet.sign(messageBytes)
+        } catch {
+            throw ShieldError.signingFailed
+        }
+
+        // 8. Build and send signed transaction
+        let signedTx = try SolanaTransaction.buildSignedTransaction(
+            message: message,
+            signature: signature
+        )
+
+        let txSignature: String
+        do {
+            txSignature = try await rpcClient.sendTransaction(signedTx)
+        } catch let error as FaucetError {
+            throw ShieldError.transactionFailed(error.localizedDescription)
+        } catch {
+            throw ShieldError.transactionFailed(error.localizedDescription)
+        }
+
+        // 9. Wait for confirmation
+        try await rpcClient.waitForConfirmation(signature: txSignature, timeout: 30)
+
+        return UnshieldResult(
+            stealthAddress: payment.stealthAddress,
+            amount: transferAmount,
+            signature: txSignature,
+            paymentId: payment.id
+        )
+    }
+
+    /// Unshield with amount in SOL (convenience)
+    public func unshieldSol(
+        _ sol: Double?,
+        payment: PendingPayment,
+        mainWalletAddress: String,
+        spendingKey: Data
+    ) async throws -> UnshieldResult {
+        let lamports = sol.map { UInt64($0 * 1_000_000_000) }
+        return try await unshield(
+            payment: payment,
+            mainWalletAddress: mainWalletAddress,
+            spendingKey: spendingKey,
+            lamports: lamports
         )
     }
 }

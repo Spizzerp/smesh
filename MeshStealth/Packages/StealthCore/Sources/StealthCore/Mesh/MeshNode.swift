@@ -12,8 +12,8 @@ public struct MeshPeer: Identifiable, Sendable, Equatable {
     /// Peer capabilities
     public let capabilities: PeerCapabilities
 
-    /// Signal strength (RSSI) - lower is weaker
-    public let rssi: Int
+    /// Signal strength (RSSI) - lower is weaker (updated on discovery)
+    public var rssi: Int
 
     /// When this peer was first discovered
     public let discoveredAt: Date

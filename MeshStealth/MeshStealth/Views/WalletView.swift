@@ -14,6 +14,7 @@ struct WalletView: View {
     @State private var shieldAmount = ""
     @State private var shieldError: String?
     @State private var shieldSuccess = false
+    @State private var unshieldSuccess = false
 
     var body: some View {
         NavigationStack {
@@ -25,8 +26,10 @@ struct WalletView: View {
                         balance: walletViewModel.formattedMainWalletBalance,
                         network: walletViewModel.network,
                         isAirdropping: walletViewModel.isAirdropping,
+                        isUnshielding: walletViewModel.isUnshielding,
                         showUnshieldInput: $showUnshieldInput,
                         unshieldAmount: $shieldAmount,
+                        maxUnshieldAmount: walletViewModel.maxUnshieldAmount,
                         onAirdrop: requestAirdrop,
                         onRefresh: { Task { await walletViewModel.refreshBalance() } },
                         onUnshieldConfirm: performUnshield
@@ -37,8 +40,8 @@ struct WalletView: View {
                         showShieldInput: $showShieldInput,
                         showUnshieldInput: $showUnshieldInput,
                         canShield: walletViewModel.canShield,
-                        canUnshield: walletViewModel.stealthBalance > 0,
-                        isShielding: walletViewModel.isShielding
+                        canUnshield: walletViewModel.canUnshield,
+                        isLoading: walletViewModel.isShielding || walletViewModel.isUnshielding
                     )
 
                     // Stealth Balance Card - with Shield input
@@ -93,6 +96,11 @@ struct WalletView: View {
                     Text(error)
                 }
             }
+            .alert("Unshield Successful!", isPresented: $unshieldSuccess) {
+                Button("OK") { }
+            } message: {
+                Text("Funds have been moved to your main wallet")
+            }
         }
     }
 
@@ -123,11 +131,16 @@ struct WalletView: View {
     }
 
     private func performUnshield() {
-        // Unshield is more complex - requires stealth key derivation
-        // For now, show a message that it's not yet implemented
-        shieldError = "Unshield is coming soon. This requires deriving the spending key for each stealth address."
-        showUnshieldInput = false
-        shieldAmount = ""
+        Task {
+            do {
+                try await walletViewModel.unshieldAll()
+                shieldAmount = ""
+                showUnshieldInput = false
+                unshieldSuccess = true
+            } catch {
+                shieldError = error.localizedDescription
+            }
+        }
     }
 }
 
@@ -138,8 +151,10 @@ struct MainWalletCard: View {
     let balance: String
     let network: SolanaNetwork
     let isAirdropping: Bool
+    let isUnshielding: Bool
     @Binding var showUnshieldInput: Bool
     @Binding var unshieldAmount: String
+    let maxUnshieldAmount: Double
     let onAirdrop: () -> Void
     let onRefresh: () -> Void
     let onUnshieldConfirm: () -> Void
@@ -208,9 +223,11 @@ struct MainWalletCard: View {
             // Unshield amount input (shown when Unshield button tapped)
             if showUnshieldInput {
                 AmountInputSection(
-                    label: "Receiving",
+                    label: "Unshield All",
                     amount: $unshieldAmount,
-                    placeholder: "0.0",
+                    placeholder: "All",
+                    maxLabel: String(format: "Available: %.4f SOL", maxUnshieldAmount),
+                    isLoading: isUnshielding,
                     onConfirm: onUnshieldConfirm,
                     onCancel: { showUnshieldInput = false; unshieldAmount = "" }
                 )
@@ -329,7 +346,7 @@ struct ShieldUnshieldButtons: View {
     @Binding var showUnshieldInput: Bool
     let canShield: Bool
     let canUnshield: Bool
-    let isShielding: Bool
+    let isLoading: Bool
 
     var body: some View {
         HStack(spacing: 32) {
@@ -341,13 +358,13 @@ struct ShieldUnshieldButtons: View {
                 VStack(spacing: 4) {
                     Image(systemName: "arrow.down.circle.fill")
                         .font(.system(size: 40))
-                        .foregroundColor(canShield ? .blue : .gray)
+                        .foregroundColor(canShield && !isLoading ? .blue : .gray)
                     Text("Shield")
                         .font(.caption)
-                        .foregroundColor(canShield ? .blue : .gray)
+                        .foregroundColor(canShield && !isLoading ? .blue : .gray)
                 }
             }
-            .disabled(!canShield || isShielding)
+            .disabled(!canShield || isLoading)
 
             // Unshield button (up arrow)
             Button {
@@ -357,13 +374,13 @@ struct ShieldUnshieldButtons: View {
                 VStack(spacing: 4) {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 40))
-                        .foregroundColor(canUnshield ? .green : .gray)
+                        .foregroundColor(canUnshield && !isLoading ? .green : .gray)
                     Text("Unshield")
                         .font(.caption)
-                        .foregroundColor(canUnshield ? .green : .gray)
+                        .foregroundColor(canUnshield && !isLoading ? .green : .gray)
                 }
             }
-            .disabled(!canUnshield || isShielding)
+            .disabled(!canUnshield || isLoading)
         }
         .padding(.vertical, 8)
     }

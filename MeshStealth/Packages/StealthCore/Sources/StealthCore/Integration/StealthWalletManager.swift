@@ -556,6 +556,74 @@ public class StealthWalletManager: ObservableObject {
         return try await shield(lamports: lamports)
     }
 
+    /// Unshield funds from a pending payment back to main wallet
+    /// - Parameters:
+    ///   - payment: The pending payment to unshield
+    ///   - lamports: Amount to unshield (nil = all available)
+    /// - Returns: UnshieldResult with transaction details
+    public func unshield(payment: PendingPayment, lamports: UInt64? = nil) async throws -> UnshieldResult {
+        guard let mainWallet = mainWallet, let keyPair = keyPair else {
+            throw WalletError.notInitialized
+        }
+
+        // Derive spending key for this payment
+        let spendingKey = try deriveSpendingKey(for: payment)
+
+        if shieldService == nil {
+            shieldService = ShieldService(rpcClient: faucet)
+        }
+
+        let mainAddress = await mainWallet.address
+
+        let result = try await shieldService!.unshield(
+            payment: payment,
+            mainWalletAddress: mainAddress,
+            spendingKey: spendingKey,
+            lamports: lamports
+        )
+
+        // Remove from pending payments and refresh balances
+        pendingPayments.removeAll { $0.id == payment.id }
+        savePendingPayments()
+        updatePendingBalance()
+        await refreshMainWalletBalance()
+
+        return result
+    }
+
+    /// Unshield with amount in SOL (convenience)
+    /// - Parameters:
+    ///   - sol: Amount to unshield in SOL (nil = all available)
+    ///   - payment: The pending payment to unshield
+    /// - Returns: UnshieldResult with transaction details
+    public func unshieldSol(_ sol: Double?, payment: PendingPayment) async throws -> UnshieldResult {
+        let lamports = sol.map { UInt64($0 * 1_000_000_000) }
+        return try await unshield(payment: payment, lamports: lamports)
+    }
+
+    /// Unshield all pending payments to main wallet
+    /// - Returns: Array of UnshieldResults for each successful unshield
+    public func unshieldAll() async throws -> [UnshieldResult] {
+        var results: [UnshieldResult] = []
+
+        // Get payments that can be unshielded
+        let paymentsToUnshield = pendingPayments.filter {
+            $0.status == .received || $0.status == .failed
+        }
+
+        for payment in paymentsToUnshield {
+            do {
+                let result = try await unshield(payment: payment)
+                results.append(result)
+            } catch {
+                // Log error but continue with other payments
+                print("Failed to unshield payment \(payment.id): \(error)")
+            }
+        }
+
+        return results
+    }
+
     // MARK: - Reset
 
     /// Clear all wallet data (for testing/reset)
