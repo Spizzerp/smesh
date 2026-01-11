@@ -4,13 +4,29 @@ import StealthCore
 struct WalletView: View {
     @EnvironmentObject var walletViewModel: WalletViewModel
     @EnvironmentObject var meshViewModel: MeshViewModel
+    @State private var showingAirdropAlert = false
+    @State private var airdropError: Error?
+    @State private var airdropSuccess = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
-                    // Balance Card
-                    BalanceCard(balance: walletViewModel.formattedBalance)
+                    // Main Wallet Card (for funding)
+                    MainWalletCard(
+                        address: walletViewModel.mainWalletAddress,
+                        balance: walletViewModel.formattedMainWalletBalance,
+                        network: walletViewModel.network,
+                        isAirdropping: walletViewModel.isAirdropping,
+                        onAirdrop: requestAirdrop,
+                        onRefresh: { Task { await walletViewModel.refreshBalance() } }
+                    )
+
+                    // Stealth Balance Card
+                    StealthBalanceCard(
+                        balance: walletViewModel.formattedBalance,
+                        hasPostQuantum: walletViewModel.hasPostQuantum
+                    )
 
                     // Status indicators
                     StatusBar(
@@ -49,11 +65,166 @@ struct WalletView: View {
             }
             .navigationTitle("Wallet")
             .background(Color(.systemGroupedBackground))
+            .alert("Airdrop Received!", isPresented: $airdropSuccess) {
+                Button("OK") { }
+            } message: {
+                Text("1 SOL has been added to your wallet")
+            }
+            .alert("Airdrop Failed", isPresented: .constant(airdropError != nil)) {
+                Button("OK") { airdropError = nil }
+            } message: {
+                if let error = airdropError {
+                    Text(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func requestAirdrop() {
+        Task {
+            do {
+                _ = try await walletViewModel.requestAirdrop()
+                airdropSuccess = true
+            } catch {
+                airdropError = error
+            }
         }
     }
 }
 
 // MARK: - Components
+
+struct MainWalletCard: View {
+    let address: String?
+    let balance: String
+    let network: SolanaNetwork
+    let isAirdropping: Bool
+    let onAirdrop: () -> Void
+    let onRefresh: () -> Void
+
+    @State private var showCopied = false
+
+    var body: some View {
+        VStack(spacing: 16) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Main Wallet")
+                        .font(.headline)
+                    Text(network.rawValue)
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+
+                Spacer()
+
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            // Balance
+            Text(balance)
+                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .foregroundColor(.primary)
+
+            // Address
+            if let address = address {
+                Button {
+                    UIPasteboard.general.string = address
+                    showCopied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        showCopied = false
+                    }
+                } label: {
+                    HStack {
+                        Text(truncateAddress(address))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
+                            .font(.caption)
+                            .foregroundColor(showCopied ? .green : .secondary)
+                    }
+                }
+            }
+
+            // Airdrop Button (devnet only)
+            if network == .devnet {
+                Button(action: onAirdrop) {
+                    HStack {
+                        if isAirdropping {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "drop.fill")
+                        }
+                        Text(isAirdropping ? "Requesting..." : "Request Airdrop")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(isAirdropping ? Color.gray : Color.blue)
+                    )
+                }
+                .disabled(isAirdropping)
+            }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color(.systemBackground))
+                .shadow(color: .black.opacity(0.05), radius: 10, y: 5)
+        )
+        .padding(.horizontal)
+    }
+
+    private func truncateAddress(_ address: String) -> String {
+        guard address.count > 12 else { return address }
+        return "\(address.prefix(6))...\(address.suffix(4))"
+    }
+}
+
+struct StealthBalanceCard: View {
+    let balance: String
+    let hasPostQuantum: Bool
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("Stealth Balance")
+                    .font(.headline)
+                Spacer()
+                if hasPostQuantum {
+                    Label("PQ", systemImage: "lock.shield.fill")
+                        .font(.caption)
+                        .foregroundColor(.purple)
+                }
+            }
+
+            Text(balance)
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .foregroundColor(.primary)
+
+            Text("Received via mesh (pending settlement)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color(.systemBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color.purple.opacity(0.3), lineWidth: 1)
+                )
+        )
+        .padding(.horizontal)
+    }
+}
 
 struct BalanceCard: View {
     let balance: String

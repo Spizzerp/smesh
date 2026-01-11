@@ -24,6 +24,7 @@ public final class KeychainService: @unchecked Sendable {
         case mlkemPrivateKey = "stealth.mlkem.private"  // ~2400 bytes for hybrid mode
         case metaAddressPublic = "stealth.meta.public"
         case hybridMetaAddressPublic = "stealth.hybridmeta.public"  // 1248 bytes
+        case mainWalletPrivateKey = "wallet.main.private"  // 32 bytes
     }
 
     /// Initialize with custom service identifier
@@ -146,6 +147,37 @@ public final class KeychainService: @unchecked Sendable {
     /// - Returns: true if a keypair is stored
     public func hasKeyPair() -> Bool {
         (try? loadData(account: .spendingScalar)) != nil
+    }
+
+    // MARK: - Main Wallet Storage
+
+    /// Store the main wallet private key
+    /// - Parameter privateKey: 32-byte ed25519 private key
+    /// - Throws: StealthError.keychainError if storage fails
+    public func storeMainWalletKey(_ privateKey: Data) throws {
+        try storeData(
+            privateKey,
+            account: .mainWalletPrivateKey
+        )
+    }
+
+    /// Load the main wallet private key
+    /// - Returns: The private key or nil if not found
+    /// - Throws: StealthError if keychain access fails
+    public func loadMainWalletKey() throws -> Data? {
+        return try loadData(account: .mainWalletPrivateKey)
+    }
+
+    /// Delete the main wallet key
+    /// - Throws: StealthError.keychainError if deletion fails
+    public func deleteMainWalletKey() throws {
+        try deleteData(account: .mainWalletPrivateKey)
+    }
+
+    /// Check if a main wallet exists in the Keychain
+    /// - Returns: true if a main wallet is stored
+    public func hasMainWallet() -> Bool {
+        (try? loadData(account: .mainWalletPrivateKey)) != nil
     }
 
     // MARK: - Generic Data Storage

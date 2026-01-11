@@ -126,7 +126,7 @@ public enum MeshMessageType: UInt8, Codable, Sendable {
 // MARK: - Meta-Address Exchange Payloads
 
 /// Request for a peer's meta-address (for proximity-based payment initiation)
-public struct MetaAddressRequest: Codable, Sendable {
+public struct MetaAddressRequest: Codable, Sendable, Equatable {
     /// Requester's peer ID
     public let requesterPeerID: String
 
@@ -148,7 +148,7 @@ public struct MetaAddressRequest: Codable, Sendable {
 }
 
 /// Response containing a meta-address
-public struct MetaAddressResponse: Codable, Sendable {
+public struct MetaAddressResponse: Codable, Sendable, Equatable {
     /// Responder's peer ID
     public let responderPeerID: String
 

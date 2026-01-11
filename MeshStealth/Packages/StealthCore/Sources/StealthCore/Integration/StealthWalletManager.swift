@@ -118,6 +118,12 @@ public class StealthWalletManager: ObservableObject {
     /// User's stealth keypair
     @Published public private(set) var keyPair: StealthKeyPair?
 
+    /// Main Solana wallet (visible, for funding)
+    @Published public private(set) var mainWallet: SolanaWallet?
+
+    /// Main wallet balance in lamports
+    @Published public private(set) var mainWalletBalance: UInt64 = 0
+
     /// Pending payments awaiting settlement
     @Published public private(set) var pendingPayments: [PendingPayment] = []
 
@@ -133,10 +139,14 @@ public class StealthWalletManager: ObservableObject {
     /// Last sync timestamp
     @Published public private(set) var lastSyncAt: Date?
 
+    /// Whether airdrop is in progress
+    @Published public private(set) var isAirdropping: Bool = false
+
     // MARK: - Private
 
     private let keychainService: KeychainService
     private let userDefaults: UserDefaults
+    private let faucet: DevnetFaucet
     private let pendingPaymentsKey = "meshstealth.pending_payments"
     private let settledPaymentsKey = "meshstealth.settled_payments"
 
@@ -156,23 +166,28 @@ public class StealthWalletManager: ObservableObject {
 
     public init(
         keychainService: KeychainService = KeychainService(),
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        faucet: DevnetFaucet = DevnetFaucet()
     ) {
         self.keychainService = keychainService
         self.userDefaults = userDefaults
+        self.faucet = faucet
     }
 
     /// Initialize wallet with existing or new keypair
     public func initialize() async throws {
-        // Try to load existing keypair
+        // Try to load existing stealth keypair
         if let existing = try? keychainService.loadKeyPair() {
             keyPair = existing
         } else {
-            // Generate new keypair
+            // Generate new stealth keypair
             let newKeyPair = try StealthKeyPair.generate()
             try keychainService.storeKeyPair(newKeyPair)
             keyPair = newKeyPair
         }
+
+        // Initialize main wallet
+        try await initializeMainWallet()
 
         // Load pending payments from storage
         loadPendingPayments()
@@ -180,6 +195,21 @@ public class StealthWalletManager: ObservableObject {
         updatePendingBalance()
 
         isInitialized = true
+    }
+
+    /// Initialize or restore the main Solana wallet
+    private func initializeMainWallet() async throws {
+        if let storedKey = try keychainService.loadMainWalletKey() {
+            mainWallet = try SolanaWallet(privateKeyData: storedKey)
+        } else {
+            let newWallet = SolanaWallet()
+            let privateKey = await newWallet.privateKeyData
+            try keychainService.storeMainWalletKey(privateKey)
+            mainWallet = newWallet
+        }
+
+        // Refresh balance
+        await refreshMainWalletBalance()
     }
 
     /// Import existing keypair (from restored StealthKeyPair)
@@ -336,6 +366,65 @@ public class StealthWalletManager: ObservableObject {
         return keyPair.hybridMetaAddressString
     }
 
+    // MARK: - Main Wallet
+
+    /// Get main wallet address for display/funding
+    public var mainWalletAddress: String? {
+        get async {
+            await mainWallet?.address
+        }
+    }
+
+    /// Main wallet balance in SOL
+    public var mainWalletBalanceInSol: Double {
+        Double(mainWalletBalance) / 1_000_000_000.0
+    }
+
+    /// Refresh the main wallet balance from the network
+    @discardableResult
+    public func refreshMainWalletBalance() async -> UInt64 {
+        guard let address = await mainWallet?.address else {
+            mainWalletBalance = 0
+            return 0
+        }
+
+        do {
+            let balance = try await faucet.getBalance(address: address)
+            mainWalletBalance = balance
+            lastSyncAt = Date()
+            return balance
+        } catch {
+            // Log error but don't throw - balance refresh is best-effort
+            print("Failed to refresh balance: \(error)")
+            return mainWalletBalance
+        }
+    }
+
+    /// Request devnet airdrop to main wallet
+    /// - Parameter lamports: Amount to request (default 1 SOL)
+    /// - Returns: Transaction signature
+    public func requestAirdrop(lamports: UInt64 = 1_000_000_000) async throws -> String {
+        guard let address = await mainWallet?.address else {
+            throw WalletError.notInitialized
+        }
+
+        isAirdropping = true
+        defer { isAirdropping = false }
+
+        let signature = try await faucet.requestAirdrop(to: address, lamports: lamports)
+
+        // Wait for confirmation and refresh balance
+        try await faucet.waitForConfirmation(signature: signature, timeout: 30)
+        await refreshMainWalletBalance()
+
+        return signature
+    }
+
+    /// Request 1 SOL airdrop (convenience)
+    public func requestOneSolAirdrop() async throws -> String {
+        try await requestAirdrop(lamports: 1_000_000_000)
+    }
+
     // MARK: - Persistence
 
     private func savePendingPayments() {
@@ -387,7 +476,10 @@ public class StealthWalletManager: ObservableObject {
     /// Clear all wallet data (for testing/reset)
     public func reset() throws {
         try keychainService.deleteKeyPair()
+        try? keychainService.deleteMainWalletKey()
         keyPair = nil
+        mainWallet = nil
+        mainWalletBalance = 0
         pendingPayments = []
         settledPayments = []
         pendingBalance = 0

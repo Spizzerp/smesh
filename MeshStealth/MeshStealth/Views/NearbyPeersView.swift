@@ -9,88 +9,134 @@ struct NearbyPeersView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                // Background
-                Color(.systemGroupedBackground)
-                    .ignoresSafeArea()
+            mainContent
+                .navigationTitle("Nearby")
+                .toolbar { toolbarContent }
+                .sheet(isPresented: $showingSendSheet) { sendSheetContent }
+                .alert("Address Request", isPresented: $showingAddressRequest) {
+                    alertButtons
+                } message: {
+                    alertMessage
+                }
+                .onChange(of: meshViewModel.pendingMetaAddressRequest) { _, request in
+                    showingAddressRequest = request != nil
+                }
+                .onChange(of: meshViewModel.receivedMetaAddress) { _, response in
+                    if response != nil {
+                        showingSendSheet = true
+                    }
+                }
+        }
+    }
 
-                if meshViewModel.hasNearbyPeers {
-                    ScrollView {
-                        VStack(spacing: 20) {
-                            // Closest peer highlight (tap to pay zone)
-                            if let closest = meshViewModel.closestPeer {
-                                TapToPayCard(peer: closest) {
-                                    selectedPeer = closest
-                                    requestAddressFromPeer(closest)
-                                }
-                            }
+    // MARK: - Main Content
 
-                            // Other nearby peers
-                            if meshViewModel.nearbyPeers.count > 1 {
-                                OtherPeersSection(
-                                    peers: meshViewModel.nearbyPeers.filter { $0.id != meshViewModel.closestPeer?.id },
-                                    onSelect: { peer in
-                                        selectedPeer = peer
-                                        requestAddressFromPeer(peer)
-                                    }
-                                )
-                            }
-                        }
-                        .padding()
-                    }
-                } else {
-                    ScanningView(isActive: meshViewModel.isActive)
-                }
-            }
-            .navigationTitle("Nearby")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        if meshViewModel.isActive {
-                            meshViewModel.stopMesh()
-                        } else {
-                            meshViewModel.startMesh()
-                        }
-                    } label: {
-                        Image(systemName: meshViewModel.isActive ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
-                    }
-                }
-            }
-            .sheet(isPresented: $showingSendSheet) {
-                if let peer = selectedPeer, let response = meshViewModel.receivedMetaAddress {
-                    SendPaymentSheet(
-                        peer: peer,
-                        metaAddress: response.metaAddress,
-                        isHybrid: response.isHybrid
-                    )
-                }
-            }
-            .alert("Address Request", isPresented: $showingAddressRequest) {
-                Button("Share Address") {
-                    if let request = meshViewModel.pendingMetaAddressRequest {
-                        Task {
-                            await meshViewModel.respondToMetaAddressRequest(request)
-                        }
-                    }
-                }
-                Button("Decline", role: .cancel) {
-                    meshViewModel.declineMetaAddressRequest()
-                }
-            } message: {
-                if let request = meshViewModel.pendingMetaAddressRequest {
-                    Text("A nearby device wants to send you a payment. Share your address?")
-                }
-            }
-            .onChange(of: meshViewModel.pendingMetaAddressRequest) { _, request in
-                showingAddressRequest = request != nil
-            }
-            .onChange(of: meshViewModel.receivedMetaAddress) { _, response in
-                if response != nil {
-                    showingSendSheet = true
-                }
+    @ViewBuilder
+    private var mainContent: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+
+            if meshViewModel.hasNearbyPeers {
+                peersScrollView
+            } else {
+                ScanningView(isActive: meshViewModel.isActive)
             }
         }
     }
+
+    @ViewBuilder
+    private var peersScrollView: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                closestPeerCard
+                otherPeersSection
+            }
+            .padding()
+        }
+    }
+
+    @ViewBuilder
+    private var closestPeerCard: some View {
+        if let closest = meshViewModel.closestPeer {
+            TapToPayCard(peer: closest) {
+                selectedPeer = closest
+                requestAddressFromPeer(closest)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var otherPeersSection: some View {
+        if meshViewModel.nearbyPeers.count > 1 {
+            let otherPeers = meshViewModel.nearbyPeers.filter { $0.id != meshViewModel.closestPeer?.id }
+            OtherPeersSection(
+                peers: otherPeers,
+                onSelect: { peer in
+                    selectedPeer = peer
+                    requestAddressFromPeer(peer)
+                }
+            )
+        }
+    }
+
+    // MARK: - Toolbar
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            meshToggleButton
+        }
+    }
+
+    private var meshToggleButton: some View {
+        Button {
+            if meshViewModel.isActive {
+                meshViewModel.stopMesh()
+            } else {
+                meshViewModel.startMesh()
+            }
+        } label: {
+            let iconName = meshViewModel.isActive ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash"
+            Image(systemName: iconName)
+        }
+    }
+
+    // MARK: - Sheet
+
+    @ViewBuilder
+    private var sendSheetContent: some View {
+        if let peer = selectedPeer, let response = meshViewModel.receivedMetaAddress {
+            SendPaymentSheet(
+                peer: peer,
+                metaAddress: response.metaAddress,
+                isHybrid: response.isHybrid
+            )
+        }
+    }
+
+    // MARK: - Alert
+
+    @ViewBuilder
+    private var alertButtons: some View {
+        Button("Share Address") {
+            if let request = meshViewModel.pendingMetaAddressRequest {
+                Task {
+                    await meshViewModel.respondToMetaAddressRequest(request)
+                }
+            }
+        }
+        Button("Decline", role: .cancel) {
+            meshViewModel.declineMetaAddressRequest()
+        }
+    }
+
+    @ViewBuilder
+    private var alertMessage: some View {
+        Text("A nearby device wants to send you a payment. Share your address?")
+    }
+
+    // MARK: - Actions
 
     private func requestAddressFromPeer(_ peer: NearbyPeer) {
         Task {
