@@ -74,23 +74,36 @@ class MeshViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .assign(to: &$isActive)
 
-        // Bind peer updates
-        meshService.$connectedPeers
-            .receive(on: DispatchQueue.main)
-            .map { peers in
-                peers.map { peer in
-                    NearbyPeer(
-                        id: peer.id,
-                        name: peer.name,
-                        rssi: peer.rssi,
-                        isConnected: peer.isConnected,
-                        lastSeenAt: peer.lastSeenAt,
-                        supportsHybrid: peer.capabilities.supportsHybrid
-                    )
-                }
-                .sorted { $0.rssi > $1.rssi }  // Sort by signal strength (closest first)
+        // Bind ALL peers (discovered + connected)
+        Publishers.CombineLatest(
+            meshService.$connectedPeers,
+            meshService.$discoveredPeers
+        )
+        .receive(on: DispatchQueue.main)
+        .map { connected, discovered in
+            // Merge both lists, preferring connected status
+            var peerMap: [String: MeshPeer] = [:]
+
+            for peer in discovered {
+                peerMap[peer.id] = peer
             }
-            .assign(to: &$nearbyPeers)
+            for peer in connected {
+                peerMap[peer.id] = peer  // Connected peers override discovered
+            }
+
+            return peerMap.values.map { peer in
+                NearbyPeer(
+                    id: peer.id,
+                    name: peer.name,
+                    rssi: peer.rssi,
+                    isConnected: peer.isConnected,
+                    lastSeenAt: peer.lastSeenAt,
+                    supportsHybrid: peer.capabilities.supportsHybrid
+                )
+            }
+            .sorted { $0.rssi > $1.rssi }  // Sort by signal strength (closest first)
+        }
+        .assign(to: &$nearbyPeers)
 
         // Update closest peer
         $nearbyPeers
@@ -143,9 +156,11 @@ class MeshViewModel: ObservableObject {
         do {
             let message = try MeshMessage.metaAddressRequest(request: request)
             try await meshService.sendToPeer(message, peerID: peer.id)
+            print("[MESH] Sent meta-address request to peer: \(peer.id)")
         } catch {
             lastError = error
             isRequestingAddress = false
+            print("[MESH] Failed to send meta-address request: \(error)")
         }
     }
 
@@ -173,9 +188,13 @@ class MeshViewModel: ObservableObject {
 
         do {
             let message = try MeshMessage.metaAddressResponse(response: response)
-            try await meshService.sendToPeer(message, peerID: request.requesterPeerID)
+            // Broadcast to all connected peers - the requester will filter by their request
+            // This avoids peer ID mismatch issues between MeshNode IDs and CBPeripheral IDs
+            try await meshService.broadcastMessage(message)
+            print("[MESH] Broadcast meta-address response")
         } catch {
             lastError = error
+            print("[MESH] Failed to send meta-address response: \(error)")
         }
 
         // Clear the pending request

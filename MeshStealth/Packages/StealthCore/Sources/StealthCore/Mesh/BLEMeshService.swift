@@ -97,6 +97,12 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
     /// Whether scan is in active phase of duty cycle
     private var isInScanPhase = false
 
+    /// Whether the GATT service has been successfully added
+    private var isServiceAdded = false
+
+    /// Whether we want the mesh to be active (used for auto-start when BLE ready)
+    private var wantsActive = false
+
     // MARK: - Initialization
 
     public init(meshNode: MeshNode, messageRelay: MessageRelay) {
@@ -138,12 +144,24 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
 
     /// Start mesh networking (scanning and advertising)
     public func start() {
+        wantsActive = true
+        tryStart()
+    }
+
+    /// Try to start mesh if both BLE managers are ready
+    private func tryStart() {
         bleQueue.async { [weak self] in
-            guard let self = self else { return }
-            guard self.centralManager.state == .poweredOn else {
-                print("Bluetooth not ready, state: \(self.centralManager.state.rawValue)")
+            guard let self = self, self.wantsActive else { return }
+
+            // Check BOTH managers are ready
+            guard self.centralManager.state == .poweredOn,
+                  self.peripheralManager.state == .poweredOn else {
+                print("Bluetooth not ready - Central: \(self.centralManager.state.rawValue), Peripheral: \(self.peripheralManager.state.rawValue)")
                 return
             }
+
+            // Avoid starting twice
+            guard !self.isActive else { return }
 
             self.startScanning()
             self.startAdvertising()
@@ -155,6 +173,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
 
     /// Stop mesh networking
     public func stop() {
+        wantsActive = false
         bleQueue.async { [weak self] in
             guard let self = self else { return }
             self.stopScanning()
@@ -187,6 +206,11 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
 
         // Capture values synchronously before async boundary
         let (peripheralsToSend, characteristic, manager) = getPeripheralsForBroadcast()
+        let subscriberCount = getSubscribedCentralCount()
+
+        print("[BLE] Broadcasting message type: \(message.type), size: \(data.count) bytes")
+        print("[BLE]   -> To \(peripheralsToSend.count) connected peripherals")
+        print("[BLE]   -> To \(subscriberCount) subscribed centrals")
 
         // Send to all connected peripherals (as central)
         for (peripheral, char) in peripheralsToSend {
@@ -199,6 +223,13 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
         }
 
         await meshNode.recordMessageSent(bytes: data.count)
+    }
+
+    /// Thread-safe helper to get subscriber count
+    private func getSubscribedCentralCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return subscribedCentrals.count
     }
 
     /// Thread-safe helper to get peripherals for broadcast
@@ -344,17 +375,18 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
 
         lock.lock()
         let alreadyConnected = connectedPeripherals[peripheralID] != nil
+        let alreadyPending = pendingConnections[peripheralID] != nil
         let lastAttempt = lastConnectionAttempt[peripheralID]
         lock.unlock()
 
-        // Skip if already connected
-        guard !alreadyConnected else { return }
+        // Skip if already connected or pending connection
+        guard !alreadyConnected && !alreadyPending else { return }
 
         // Throttle connection attempts
         if let lastAttempt = lastAttempt {
             let elapsed = Date().timeIntervalSince(lastAttempt)
             if elapsed < connectionThrottleInterval {
-                // Store for later connection attempt
+                // Store for later connection attempt (this also retains the peripheral)
                 lock.lock()
                 pendingConnections[peripheralID] = peripheral
                 lock.unlock()
@@ -362,10 +394,11 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
             }
         }
 
-        // Record this connection attempt
+        // IMPORTANT: Store the peripheral reference BEFORE calling connect
+        // CoreBluetooth requires us to retain the peripheral during connection
         lock.lock()
         lastConnectionAttempt[peripheralID] = Date()
-        pendingConnections.removeValue(forKey: peripheralID)
+        pendingConnections[peripheralID] = peripheral  // Keep reference during connection
         lock.unlock()
 
         peripheral.delegate = self
@@ -420,20 +453,15 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
 
         lock.lock()
         self.messageCharacteristic = characteristic
+        self.isServiceAdded = false
         lock.unlock()
 
         let service = CBMutableService(type: serviceUUID, primary: true)
         service.characteristics = [characteristic]
 
+        // Add service - advertising will start in didAdd callback
         peripheralManager.add(service)
-
-        // Start advertising
-        peripheralManager.startAdvertising([
-            CBAdvertisementDataServiceUUIDsKey: [serviceUUID],
-            CBAdvertisementDataLocalNameKey: "MeshStealth"
-        ])
-
-        print("Started advertising mesh service")
+        print("Adding mesh service...")
     }
 
     private func stopAdvertising() {
@@ -442,6 +470,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
 
         lock.lock()
         subscribedCentrals.removeAll()
+        isServiceAdded = false
         lock.unlock()
 
         print("Stopped advertising")
@@ -458,7 +487,9 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
 
             do {
                 let message = try MeshMessage.deserialize(from: data)
+                print("[BLE] Received message type: \(message.type) from peer: \(peerID.prefix(8))...")
                 let result = await meshNode.processIncomingMessage(message)
+                print("[BLE] Process result: \(result)")
 
                 switch result {
                 case .relay(let forwardMessage):
@@ -475,7 +506,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
                     break
                 }
             } catch {
-                print("Failed to process message: \(error)")
+                print("[BLE] Failed to process message: \(error)")
             }
         }
     }
@@ -488,6 +519,18 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
     @MainActor
     private func notifyPeerDiscovered(_ peer: MeshPeer) {
         delegate?.bleService(self, didDiscoverPeer: peer)
+    }
+
+    /// Refresh the published peer lists from mesh node state
+    private func refreshPeerLists() async {
+        let allPeers = await meshNode.getAllPeers()
+        let discovered = allPeers.filter { $0.connectionState == .disconnected }
+        let connected = allPeers.filter { $0.connectionState == .connected }
+
+        await MainActor.run {
+            self.discoveredPeers = discovered
+            self.connectedPeers = connected
+        }
     }
 }
 
@@ -503,10 +546,8 @@ extension BLEMeshService: CBCentralManagerDelegate {
 
         switch state {
         case .poweredOn:
-            let wasActive = self.isActive
-            if wasActive {
-                startScanning()
-            }
+            // Try to start if we want to be active
+            tryStart()
         case .poweredOff, .unauthorized, .unsupported:
             updateOnMain { [weak self] in
                 self?.isActive = false
@@ -570,6 +611,9 @@ extension BLEMeshService: CBCentralManagerDelegate {
                     peer.markSeen()
                 }
             }
+
+            // Update the published discoveredPeers list
+            await selfRef.refreshPeerLists()
         }
 
         // Auto-connect to discovered peers
@@ -584,14 +628,19 @@ extension BLEMeshService: CBCentralManagerDelegate {
         let peripheralID = peripheral.identifier
 
         lock.lock()
+        // Move from pending to connected
+        pendingConnections.removeValue(forKey: peripheralID)
         connectedPeripherals[peripheralID] = peripheral
         lock.unlock()
 
         let meshNode = self.meshNode
+        let selfRef = self
         Task {
             await meshNode.updatePeer(id: peerID) { peer in
                 peer.connectionState = .connected
             }
+            // Update published peer lists
+            await selfRef.refreshPeerLists()
         }
 
         // Discover services
@@ -608,15 +657,19 @@ extension BLEMeshService: CBCentralManagerDelegate {
         let peripheralID = peripheral.identifier
 
         lock.lock()
+        pendingConnections.removeValue(forKey: peripheralID)
         connectedPeripherals.removeValue(forKey: peripheralID)
         peripheralCharacteristics.removeValue(forKey: peripheralID)
         lock.unlock()
 
         let meshNode = self.meshNode
+        let selfRef = self
         Task {
             await meshNode.updatePeer(id: peerID) { peer in
                 peer.connectionState = .disconnected
             }
+            // Update published peer lists
+            await selfRef.refreshPeerLists()
         }
 
         print("Disconnected from peer: \(peerID)")
@@ -635,12 +688,20 @@ extension BLEMeshService: CBCentralManagerDelegate {
         error: Error?
     ) {
         let peerID = peripheral.identifier.uuidString
+        let peripheralID = peripheral.identifier
+
+        // Clean up pending connection
+        lock.lock()
+        pendingConnections.removeValue(forKey: peripheralID)
+        lock.unlock()
 
         let meshNode = self.meshNode
+        let selfRef = self
         Task {
             await meshNode.updatePeer(id: peerID) { peer in
                 peer.connectionState = .disconnected
             }
+            await selfRef.refreshPeerLists()
         }
 
         print("Failed to connect to peer: \(peerID), error: \(error?.localizedDescription ?? "unknown")")
@@ -706,14 +767,34 @@ extension BLEMeshService: CBPeripheralManagerDelegate {
     public func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
         switch peripheral.state {
         case .poweredOn:
-            if isActive {
-                startAdvertising()
-            }
+            // Try to start if we want to be active
+            tryStart()
         case .poweredOff, .unauthorized, .unsupported:
             break
         default:
             break
         }
+    }
+
+    public func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: Error?) {
+        if let error = error {
+            print("Failed to add service: \(error.localizedDescription)")
+            return
+        }
+
+        lock.lock()
+        isServiceAdded = true
+        lock.unlock()
+
+        print("Service added successfully, now advertising...")
+
+        // NOW start advertising
+        peripheral.startAdvertising([
+            CBAdvertisementDataServiceUUIDsKey: [serviceUUID],
+            CBAdvertisementDataLocalNameKey: "MeshStealth"
+        ])
+
+        print("Started advertising mesh service")
     }
 
     public func peripheralManager(
