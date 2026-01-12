@@ -65,7 +65,7 @@ public actor DevnetFaucet {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "getBalance",
-            "params": [address]
+            "params": [address, ["commitment": "confirmed"]]
         ]
 
         var request = URLRequest(url: rpcEndpoint)
@@ -191,8 +191,17 @@ public actor DevnetFaucet {
             let response = try JSONDecoder().decode(FaucetSignatureStatusResponse.self, from: data)
 
             if let status = response.result?.value.first,
-               let confirmationStatus = status?.confirmationStatus {
-                if confirmationStatus == "confirmed" || confirmationStatus == "finalized" {
+               let unwrappedStatus = status {
+                // Check for transaction execution error FIRST
+                if unwrappedStatus.err != nil {
+                    print("[RPC] Transaction \(signature.prefix(20))... FAILED with error")
+                    throw FaucetError.transactionFailed("Transaction failed on-chain (signature verified but execution failed)")
+                }
+
+                // Then check confirmation status
+                if let confirmationStatus = unwrappedStatus.confirmationStatus,
+                   confirmationStatus == "confirmed" || confirmationStatus == "finalized" {
+                    print("[RPC] Transaction \(signature.prefix(20))... confirmed successfully")
                     return
                 }
             }
@@ -293,6 +302,7 @@ public enum FaucetError: Error, LocalizedError {
     case noSignature
     case rateLimited
     case confirmationTimeout
+    case transactionFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -306,6 +316,8 @@ public enum FaucetError: Error, LocalizedError {
             return "Rate limited by devnet faucet. Try again in 24 hours, or fund from an external wallet (copy your address and use a web faucet)."
         case .confirmationTimeout:
             return "Transaction confirmation timed out"
+        case .transactionFailed(let reason):
+            return "Transaction failed: \(reason)"
         }
     }
 }

@@ -30,12 +30,20 @@ class WalletViewModel: ObservableObject {
     @Published var unshieldError: String?
     @Published var lastUnshieldResults: [UnshieldResult] = []
 
+    // Mixing State
+    @Published var isMixing = false
+    @Published var mixProgress: Double = 0
+    @Published var mixStatus: String = ""
+    @Published var mixError: String?
+    @Published var lastMixResult: MixResult?
+
     /// Current network (for UI display)
     let network: SolanaNetwork = .devnet
 
     // MARK: - Private
 
     private let walletManager: StealthWalletManager
+    private var mixingService: MixingService?
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Initialization
@@ -152,13 +160,20 @@ class WalletViewModel: ObservableObject {
     // MARK: - Shield Operations
 
     /// Shield funds from main wallet to stealth address
+    /// Automatically performs 1-5 hops after shield for privacy
     /// - Parameter sol: Amount in SOL to shield
     func shield(sol: Double) async throws {
         guard sol > 0 else { return }
 
         isShielding = true
+        isMixing = true  // Show mixing indicator during auto-mix
         shieldError = nil
-        defer { isShielding = false }  // Always reset flag
+        mixStatus = "Shielding and mixing..."
+        defer {
+            isShielding = false
+            isMixing = false
+            mixStatus = ""
+        }
 
         do {
             let result = try await walletManager.shieldSol(sol)
@@ -224,6 +239,37 @@ class WalletViewModel: ObservableObject {
         let feePerPayment = 0.000005
         let totalFees = feePerPayment * Double(pendingPayments.count)
         return max(0, stealthBalance - totalFees)
+    }
+
+    // MARK: - Mix Operations
+
+    /// Unshield all payments with automatic pre-mix for privacy
+    /// Each payment gets 1-5 hops before being sent to main wallet
+    func unshieldWithMix() async throws {
+        guard canUnshield else { return }
+
+        // Initialize mixing service lazily
+        if mixingService == nil {
+            mixingService = MixingService(walletManager: walletManager)
+        }
+
+        isUnshielding = true
+        isMixing = true
+        unshieldError = nil
+        mixStatus = "Mixing before unshield..."
+
+        defer {
+            isUnshielding = false
+            isMixing = false
+            mixStatus = ""
+        }
+
+        let results = await mixingService!.unshieldAllWithMix()
+        lastUnshieldResults = results
+
+        if results.isEmpty && !pendingPayments.isEmpty {
+            unshieldError = "Failed to unshield payments"
+        }
     }
 
     // MARK: - Mnemonic / Backup

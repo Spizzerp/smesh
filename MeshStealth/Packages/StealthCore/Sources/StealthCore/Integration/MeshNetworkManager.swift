@@ -124,10 +124,20 @@ public class MeshNetworkManager: ObservableObject {
         // Start network monitoring
         networkMonitor.start()
 
-        // Setup connectivity callback for auto-settlement
+        // Setup connectivity callback for auto-settlement and balance refresh
         networkMonitor.onConnected = { [weak self] in
             Task { @MainActor in
+                // Refresh wallet balance when coming online
+                await self?.walletManager.refreshMainWalletBalance()
+                // Settle any pending payments
                 await self?.settlementService.settleAllPending()
+            }
+        }
+
+        // Also refresh balance immediately if already online
+        if networkMonitor.isConnected {
+            Task {
+                await walletManager.refreshMainWalletBalance()
             }
         }
     }

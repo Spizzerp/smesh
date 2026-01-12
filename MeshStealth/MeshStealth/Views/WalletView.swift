@@ -16,11 +16,12 @@ struct WalletView: View {
     @State private var shieldSuccess = false
     @State private var unshieldSuccess = false
 
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    // Main Wallet Card (for funding) - with Unshield input
+                    // Main Wallet Card (for funding) - with Unshield confirmation
                     MainWalletCard(
                         address: walletViewModel.mainWalletAddress,
                         balance: walletViewModel.formattedMainWalletBalance,
@@ -28,7 +29,6 @@ struct WalletView: View {
                         isAirdropping: walletViewModel.isAirdropping,
                         isUnshielding: walletViewModel.isUnshielding,
                         showUnshieldInput: $showUnshieldInput,
-                        unshieldAmount: $shieldAmount,
                         maxUnshieldAmount: walletViewModel.maxUnshieldAmount,
                         onAirdrop: requestAirdrop,
                         onRefresh: { Task { await walletViewModel.refreshBalance() } },
@@ -61,6 +61,14 @@ struct WalletView: View {
                         peerCount: meshViewModel.peerCount,
                         hasPostQuantum: walletViewModel.hasPostQuantum
                     )
+
+                    // Auto-mix progress indicator (shown during shield/unshield)
+                    if walletViewModel.isMixing {
+                        MixProgressIndicator(
+                            mixProgress: walletViewModel.mixProgress,
+                            mixStatus: walletViewModel.mixStatus
+                        )
+                    }
 
                     // Recent Activity
                     RecentActivitySection(
@@ -133,8 +141,8 @@ struct WalletView: View {
     private func performUnshield() {
         Task {
             do {
-                try await walletViewModel.unshieldAll()
-                shieldAmount = ""
+                // Use unshield with automatic pre-mix for privacy
+                try await walletViewModel.unshieldWithMix()
                 showUnshieldInput = false
                 unshieldSuccess = true
             } catch {
@@ -153,7 +161,6 @@ struct MainWalletCard: View {
     let isAirdropping: Bool
     let isUnshielding: Bool
     @Binding var showUnshieldInput: Bool
-    @Binding var unshieldAmount: String
     let maxUnshieldAmount: Double
     let onAirdrop: () -> Void
     let onRefresh: () -> Void
@@ -220,16 +227,13 @@ struct MainWalletCard: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
 
-            // Unshield amount input (shown when Unshield button tapped)
+            // Unshield confirmation (shown when Unshield button tapped)
             if showUnshieldInput {
-                AmountInputSection(
-                    label: "Unshield All",
-                    amount: $unshieldAmount,
-                    placeholder: "All",
-                    maxLabel: String(format: "Available: %.4f SOL", maxUnshieldAmount),
+                UnshieldConfirmSection(
+                    availableAmount: maxUnshieldAmount,
                     isLoading: isUnshielding,
                     onConfirm: onUnshieldConfirm,
-                    onCancel: { showUnshieldInput = false; unshieldAmount = "" }
+                    onCancel: { showUnshieldInput = false }
                 )
             }
 
@@ -480,6 +484,78 @@ struct AmountInputSection: View {
     }
 }
 
+// MARK: - Unshield Confirmation Section
+
+struct UnshieldConfirmSection: View {
+    let availableAmount: Double
+    var isLoading: Bool = false
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Info message
+            VStack(spacing: 4) {
+                Text("Unshield All Funds")
+                    .font(.subheadline.weight(.semibold))
+                Text(String(format: "%.4f SOL will be moved to your main wallet", availableAmount))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            // Privacy note
+            HStack(spacing: 6) {
+                Image(systemName: "shuffle")
+                    .font(.caption)
+                    .foregroundColor(.purple)
+                Text("Auto-mixing 1-5 hops for privacy")
+                    .font(.caption)
+                    .foregroundColor(.purple)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.purple.opacity(0.1))
+            .cornerRadius(8)
+
+            // Confirm/Cancel buttons
+            HStack(spacing: 12) {
+                Button("Cancel") {
+                    onCancel()
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color(.systemGray5))
+                .cornerRadius(8)
+                .disabled(isLoading)
+
+                Button {
+                    onConfirm()
+                } label: {
+                    HStack {
+                        if isLoading {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        }
+                        Text(isLoading ? "Unshielding..." : "Confirm")
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(isLoading ? Color.gray : Color.green)
+                .cornerRadius(8)
+                .disabled(isLoading)
+            }
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+    }
+}
+
 struct BalanceCard: View {
     let balance: String
 
@@ -585,6 +661,52 @@ struct QuickActionButton: View {
     }
 }
 
+// MARK: - Mix Progress Indicator
+
+struct MixProgressIndicator: View {
+    let mixProgress: Double
+    let mixStatus: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle())
+                    .scaleEffect(0.8)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Auto-Mixing...")
+                        .font(.headline)
+                    Text(mixStatus.isEmpty ? "Creating stealth hops for privacy" : mixStatus)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+            }
+            .padding()
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.purple.opacity(0.1))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.purple.opacity(0.3), lineWidth: 1)
+                    )
+            )
+
+            // Progress bar
+            if mixProgress > 0 {
+                ProgressView(value: mixProgress)
+                    .progressViewStyle(LinearProgressViewStyle(tint: .purple))
+                    .padding(.horizontal)
+            }
+        }
+        .padding(.horizontal)
+    }
+}
+
+// MARK: - Recent Activity
+
 struct RecentActivitySection: View {
     let pendingPayments: [PendingPayment]
     let settledPayments: [PendingPayment]
@@ -638,9 +760,22 @@ struct PaymentRow: View {
                 .frame(width: 32)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(formattedAddress)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+                HStack(spacing: 6) {
+                    Text(formattedAddress)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+
+                    // Hop count badge (shows how many times this payment has been mixed)
+                    if payment.hopCount > 0 {
+                        Text("Mixed \(payment.hopCount)x")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.purple))
+                    }
+                }
                 Text(formattedDate)
                     .font(.caption)
                     .foregroundColor(.secondary)

@@ -28,6 +28,26 @@ public struct UnshieldResult: Sendable {
     public let paymentId: UUID
 }
 
+/// Result of a hop operation (stealth-to-stealth transfer for privacy)
+public struct HopResult: Sendable {
+    /// The source stealth address funds were taken from
+    public let sourceStealthAddress: String
+    /// The destination stealth address funds were sent to
+    public let destinationStealthAddress: String
+    /// Ephemeral public key for deriving spending key of destination
+    public let ephemeralPublicKey: Data
+    /// MLKEM ciphertext (if hybrid mode)
+    public let mlkemCiphertext: Data?
+    /// Amount transferred in lamports
+    public let amount: UInt64
+    /// Transaction signature
+    public let signature: String
+    /// View tag for fast filtering
+    public let viewTag: UInt8
+    /// The payment ID that was hopped from
+    public let sourcePaymentId: UUID
+}
+
 /// Errors from shield operations
 public enum ShieldError: Error, LocalizedError {
     case notInitialized
@@ -192,10 +212,18 @@ public actor ShieldService {
         lamports: UInt64? = nil
     ) async throws -> UnshieldResult {
 
+        print("[UNSHIELD] Starting unshield for payment \(payment.id)")
+        print("[UNSHIELD] Stealth address: \(payment.stealthAddress)")
+        print("[UNSHIELD] Ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
+        print("[UNSHIELD] Hop count: \(payment.hopCount)")
+        print("[UNSHIELD] Is hybrid: \(payment.isHybrid)")
+
         // 1. Check stealth address balance
         let stealthBalance = try await rpcClient.getBalance(address: payment.stealthAddress)
+        print("[UNSHIELD] Stealth balance: \(stealthBalance) lamports")
 
         guard stealthBalance > estimatedFee else {
+            print("[UNSHIELD] ERROR: Balance (\(stealthBalance)) <= fee (\(estimatedFee)) - stealthAddressEmpty")
             throw ShieldError.stealthAddressEmpty
         }
 
@@ -288,6 +316,163 @@ public actor ShieldService {
         return try await unshield(
             payment: payment,
             mainWalletAddress: mainWalletAddress,
+            spendingKey: spendingKey,
+            lamports: lamports
+        )
+    }
+
+    // MARK: - Hop Operations (Stealth-to-Stealth for Privacy)
+
+    /// Hop funds from one stealth address to a new stealth address
+    /// This creates an intermediate step to improve unlinking privacy
+    /// - Parameters:
+    ///   - payment: The pending payment to hop from
+    ///   - stealthKeyPair: User's stealth keypair (to generate new self-stealth address)
+    ///   - spendingKey: The derived spending key for the source stealth address (32 bytes)
+    ///   - lamports: Amount to hop (nil = all available minus fee)
+    /// - Returns: HopResult with the new stealth address and transaction details
+    public func hop(
+        payment: PendingPayment,
+        stealthKeyPair: StealthKeyPair,
+        spendingKey: Data,
+        lamports: UInt64? = nil
+    ) async throws -> HopResult {
+
+        // 1. Check source stealth address balance
+        let sourceBalance = try await rpcClient.getBalance(address: payment.stealthAddress)
+
+        guard sourceBalance > estimatedFee else {
+            throw ShieldError.stealthAddressEmpty
+        }
+
+        // 2. Determine amount to transfer
+        let transferAmount = lamports ?? (sourceBalance - estimatedFee)
+
+        guard sourceBalance >= transferAmount + estimatedFee else {
+            throw ShieldError.insufficientBalance(available: sourceBalance, required: transferAmount + estimatedFee)
+        }
+
+        // 3. Generate new stealth address for ourselves
+        let metaAddress = stealthKeyPair.hybridMetaAddressString
+
+        let stealthResult: StealthAddressResult
+        do {
+            stealthResult = try StealthAddressGenerator.generateStealthAddressAuto(
+                metaAddressString: metaAddress
+            )
+        } catch {
+            throw ShieldError.stealthAddressGenerationFailed
+        }
+
+        // 4. Create wallet from source stealth spending key
+        let sourceWallet: SolanaWallet
+        do {
+            sourceWallet = try SolanaWallet(stealthScalar: spendingKey)
+        } catch {
+            throw ShieldError.keyDerivationFailed
+        }
+
+        // 5. Verify the derived wallet matches the source stealth address
+        let derivedAddress = await sourceWallet.address
+        guard derivedAddress == payment.stealthAddress else {
+            print("Stealth address mismatch in hop!")
+            print("  Expected: \(payment.stealthAddress)")
+            print("  Derived:  \(derivedAddress)")
+            throw ShieldError.keyDerivationFailed
+        }
+
+        // 6. Get recent blockhash
+        let blockhash = try await rpcClient.getRecentBlockhash()
+
+        // 7. Build transfer transaction: source stealth -> new stealth
+        let fromPubkey = await sourceWallet.publicKeyData
+        guard let toPubkey = Data(base58Decoding: stealthResult.stealthAddress) else {
+            throw ShieldError.stealthAddressGenerationFailed
+        }
+
+        let message = try SolanaTransaction.buildTransfer(
+            from: fromPubkey,
+            to: toPubkey,
+            lamports: transferAmount,
+            recentBlockhash: blockhash
+        )
+
+        // 8. Sign with source stealth wallet
+        let messageBytes = message.serialize()
+        let signature: Data
+        do {
+            signature = try await sourceWallet.sign(messageBytes)
+        } catch {
+            throw ShieldError.signingFailed
+        }
+
+        // 9. Build and send signed transaction
+        let signedTx = try SolanaTransaction.buildSignedTransaction(
+            message: message,
+            signature: signature
+        )
+
+        let txSignature: String
+        do {
+            txSignature = try await rpcClient.sendTransaction(signedTx)
+        } catch let error as FaucetError {
+            throw ShieldError.transactionFailed(error.localizedDescription)
+        } catch {
+            throw ShieldError.transactionFailed(error.localizedDescription)
+        }
+
+        // 10. Wait for confirmation
+        try await rpcClient.waitForConfirmation(signature: txSignature, timeout: 30)
+
+        // 11. Verify funds arrived at destination (with retry for RPC propagation)
+        print("[HOP] Transaction confirmed: \(txSignature)")
+        print("[HOP] Source: \(payment.stealthAddress)")
+        print("[HOP] Destination: \(stealthResult.stealthAddress)")
+        print("[HOP] Amount: \(transferAmount) lamports")
+
+        // Wait a moment for RPC to propagate
+        try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+
+        // Verify destination balance
+        let destBalance = try await rpcClient.getBalance(address: stealthResult.stealthAddress)
+        print("[HOP] Destination balance after hop: \(destBalance) lamports")
+
+        if destBalance < transferAmount {
+            print("[HOP] WARNING: Destination balance (\(destBalance)) less than transfer amount (\(transferAmount))")
+            print("[HOP] This may indicate the transaction failed or RPC hasn't propagated yet")
+        }
+
+        // Verify we can derive the spending key for the destination
+        print("[HOP] Ephemeral public key: \(stealthResult.ephemeralPublicKey.base58EncodedString)")
+        if let ciphertext = stealthResult.mlkemCiphertext {
+            print("[HOP] MLKEM ciphertext present (\(ciphertext.count) bytes) - hybrid mode")
+        } else {
+            print("[HOP] Classical mode (no MLKEM ciphertext)")
+        }
+
+        return HopResult(
+            sourceStealthAddress: payment.stealthAddress,
+            destinationStealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey,
+            mlkemCiphertext: stealthResult.mlkemCiphertext,
+            amount: transferAmount,
+            signature: txSignature,
+            viewTag: stealthResult.viewTag,
+            sourcePaymentId: payment.id
+        )
+    }
+
+    /// Hop with amount in SOL (convenience)
+    public func hopSol(
+        _ sol: Double?,
+        payment: PendingPayment,
+        stealthKeyPair: StealthKeyPair,
+        spendingKey: Data
+    ) async throws -> HopResult {
+        let lamports = sol.map { UInt64($0 * 1_000_000_000) }
+        return try await hop(
+            payment: payment,
+            stealthKeyPair: stealthKeyPair,
             spendingKey: spendingKey,
             lamports: lamports
         )

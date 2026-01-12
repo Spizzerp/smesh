@@ -55,6 +55,15 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
     /// Shielded payments skip auto-settlement since they're already on-chain
     public let isShielded: Bool
 
+    /// Number of hops this payment has undergone (0 = original, 1+ = hopped)
+    public let hopCount: Int
+
+    /// ID of the original payment (for hop chains) - nil if this is the original
+    public let originalPaymentId: UUID?
+
+    /// ID of the parent payment (if this is a hop result) - nil if not a hop
+    public let parentPaymentId: UUID?
+
     public init(
         id: UUID = UUID(),
         stealthAddress: String,
@@ -69,7 +78,10 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         lastAttemptAt: Date? = nil,
         settlementSignature: String? = nil,
         errorMessage: String? = nil,
-        isShielded: Bool = false
+        isShielded: Bool = false,
+        hopCount: Int = 0,
+        originalPaymentId: UUID? = nil,
+        parentPaymentId: UUID? = nil
     ) {
         self.id = id
         self.stealthAddress = stealthAddress
@@ -85,6 +97,9 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         self.settlementSignature = settlementSignature
         self.errorMessage = errorMessage
         self.isShielded = isShielded
+        self.hopCount = hopCount
+        self.originalPaymentId = originalPaymentId
+        self.parentPaymentId = parentPaymentId
     }
 
     /// Create from mesh payload
@@ -103,6 +118,9 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         self.settlementSignature = nil
         self.errorMessage = nil
         self.isShielded = false  // Mesh payments are not shielded
+        self.hopCount = 0
+        self.originalPaymentId = nil
+        self.parentPaymentId = nil
     }
 
     /// Whether this payment is hybrid (post-quantum)
@@ -231,8 +249,12 @@ public class StealthWalletManager: ObservableObject {
             mainWallet = newWallet
         }
 
-        // Refresh balance
-        await refreshMainWalletBalance()
+        // DON'T refresh balance during init - breaks offline startup
+        // Balance will refresh when:
+        // 1. User manually refreshes
+        // 2. Network comes online (via MeshNetworkManager.onConnected callback)
+        // 3. Before any transaction that needs balance
+        mainWalletBalance = 0
     }
 
     /// Get the wallet mnemonic for backup (if available)
@@ -370,7 +392,13 @@ public class StealthWalletManager: ObservableObject {
 
     /// Derive spending key for a payment we received
     public func deriveSpendingKey(for payment: PendingPayment) throws -> Data {
+        print("[DERIVE-KEY] Deriving spending key for payment \(payment.id)")
+        print("[DERIVE-KEY] Stealth address: \(payment.stealthAddress)")
+        print("[DERIVE-KEY] Ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
+        print("[DERIVE-KEY] Is hybrid: \(payment.isHybrid)")
+
         guard let keyPair = keyPair else {
+            print("[DERIVE-KEY] ERROR: keyPair is nil")
             throw WalletError.notInitialized
         }
 
@@ -378,22 +406,28 @@ public class StealthWalletManager: ObservableObject {
 
         if let ciphertext = payment.mlkemCiphertext {
             // Hybrid derivation
+            print("[DERIVE-KEY] Using hybrid derivation (MLKEM ciphertext present, \(ciphertext.count) bytes)")
             guard let result = try scanner.scanHybridTransaction(
                 stealthAddress: payment.stealthAddress,
                 ephemeralPublicKey: payment.ephemeralPublicKey,
                 mlkemCiphertext: ciphertext
             ) else {
+                print("[DERIVE-KEY] ERROR: Hybrid scan returned nil - stealth address doesn't match our keys")
                 throw WalletError.keyDerivationFailed
             }
+            print("[DERIVE-KEY] Hybrid derivation successful")
             return result.spendingPrivateKey
         } else {
             // Classical derivation
+            print("[DERIVE-KEY] Using classical derivation")
             guard let result = try scanner.scanTransaction(
                 stealthAddress: payment.stealthAddress,
                 ephemeralPublicKey: payment.ephemeralPublicKey
             ) else {
+                print("[DERIVE-KEY] ERROR: Classical scan returned nil - stealth address doesn't match our keys")
                 throw WalletError.keyDerivationFailed
             }
+            print("[DERIVE-KEY] Classical derivation successful")
             return result.spendingPrivateKey
         }
     }
@@ -521,6 +555,7 @@ public class StealthWalletManager: ObservableObject {
     private var shieldService: ShieldService?
 
     /// Shield funds from main wallet to a stealth address (self-deposit)
+    /// Automatically performs 1-5 random hops after the initial shield for privacy
     /// - Parameter lamports: Amount to shield in lamports
     /// - Returns: ShieldResult with transaction details
     public func shield(lamports: UInt64) async throws -> ShieldResult {
@@ -532,27 +567,67 @@ public class StealthWalletManager: ObservableObject {
             shieldService = ShieldService(rpcClient: faucet)
         }
 
+        // Step 1: Initial shield (main → first stealth address)
+        print("[SHIELD] Starting shield of \(lamports) lamports")
         let result = try await shieldService!.shield(
             lamports: lamports,
             mainWallet: mainWallet,
             stealthKeyPair: keyPair
         )
+        print("[SHIELD] Initial shield complete: \(result.stealthAddress)")
 
-        // Add as pending payment (so it shows in stealth balance)
-        let payment = PendingPayment(
+        // Step 2: Create initial payment record
+        var currentPayment = PendingPayment(
             stealthAddress: result.stealthAddress,
             ephemeralPublicKey: result.ephemeralPublicKey,
             mlkemCiphertext: result.mlkemCiphertext,
             amount: result.amount,
             tokenMint: nil,
             viewTag: result.viewTag,
-            status: .received,  // Funds are in stealth address, ready to unshield
-            isShielded: true    // Skip auto-settlement (already on-chain)
+            status: .received,
+            isShielded: true
         )
-        addPendingPayment(payment)
+        addPendingPayment(currentPayment)
 
-        // Wait for RPC to propagate before refreshing balance
-        try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
+        // Step 3: Auto-mix with 1-5 random hops for privacy
+        let hopCount = Int.random(in: 1...5)
+        print("[SHIELD] Starting auto-mix with \(hopCount) hops")
+
+        for i in 0..<hopCount {
+            // Brief delay between hops (2-5 seconds)
+            if i > 0 {
+                let delay = Int.random(in: 2...5)
+                print("[SHIELD] Waiting \(delay)s before hop \(i + 1)...")
+                try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+            }
+
+            do {
+                print("[SHIELD] Performing auto-mix hop \(i + 1) of \(hopCount)")
+                let hopResult = try await hop(payment: currentPayment)
+
+                // Wait for state propagation
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+                // Find the new payment created by hop
+                guard let newPayment = pendingPayments.first(where: {
+                    $0.stealthAddress == hopResult.destinationStealthAddress
+                }) else {
+                    print("[SHIELD] Warning: Could not find new payment after hop \(i + 1), stopping auto-mix")
+                    break
+                }
+                currentPayment = newPayment
+                print("[SHIELD] Auto-mix hop \(i + 1) complete: \(currentPayment.stealthAddress)")
+            } catch {
+                // If hop fails, stop hopping but keep existing payment
+                print("[SHIELD] Auto-mix hop \(i + 1) failed: \(error), stopping auto-mix")
+                break
+            }
+        }
+
+        print("[SHIELD] Auto-mix complete. Final payment at: \(currentPayment.stealthAddress)")
+
+        // Refresh balance after all hops complete
+        try await Task.sleep(nanoseconds: 1_000_000_000)
         await refreshMainWalletBalance()
 
         return result
@@ -572,18 +647,34 @@ public class StealthWalletManager: ObservableObject {
     ///   - lamports: Amount to unshield (nil = all available)
     /// - Returns: UnshieldResult with transaction details
     public func unshield(payment: PendingPayment, lamports: UInt64? = nil) async throws -> UnshieldResult {
+        print("[WM-UNSHIELD] Starting unshield for payment \(payment.id)")
+        print("[WM-UNSHIELD] Stealth address: \(payment.stealthAddress)")
+        print("[WM-UNSHIELD] Ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
+        print("[WM-UNSHIELD] Is hybrid: \(payment.isHybrid)")
+        print("[WM-UNSHIELD] Hop count: \(payment.hopCount)")
+
         guard let mainWallet = mainWallet, let keyPair = keyPair else {
+            print("[WM-UNSHIELD] ERROR: Wallet not initialized")
             throw WalletError.notInitialized
         }
 
         // Derive spending key for this payment
-        let spendingKey = try deriveSpendingKey(for: payment)
+        print("[WM-UNSHIELD] Deriving spending key...")
+        let spendingKey: Data
+        do {
+            spendingKey = try deriveSpendingKey(for: payment)
+            print("[WM-UNSHIELD] Spending key derived successfully")
+        } catch {
+            print("[WM-UNSHIELD] ERROR: Failed to derive spending key: \(error)")
+            throw error
+        }
 
         if shieldService == nil {
             shieldService = ShieldService(rpcClient: faucet)
         }
 
         let mainAddress = await mainWallet.address
+        print("[WM-UNSHIELD] Main wallet address: \(mainAddress)")
 
         let result = try await shieldService!.unshield(
             payment: payment,
@@ -591,6 +682,8 @@ public class StealthWalletManager: ObservableObject {
             spendingKey: spendingKey,
             lamports: lamports
         )
+
+        print("[WM-UNSHIELD] Unshield transaction completed: \(result.signature)")
 
         // Remove from pending payments and refresh balances
         pendingPayments.removeAll { $0.id == payment.id }
@@ -635,6 +728,91 @@ public class StealthWalletManager: ObservableObject {
         }
 
         return results
+    }
+
+    // MARK: - Hop Operations
+
+    /// Hop funds from one stealth address to another stealth address
+    /// This improves privacy by breaking the direct link between stealth addresses
+    /// - Parameters:
+    ///   - payment: The pending payment to hop from
+    ///   - lamports: Amount to hop (nil = all available)
+    /// - Returns: HopResult with the new stealth address and transaction details
+    public func hop(payment: PendingPayment, lamports: UInt64? = nil) async throws -> HopResult {
+        print("[WM-HOP] Starting hop for payment \(payment.id)")
+        print("[WM-HOP] Source stealth address: \(payment.stealthAddress)")
+        print("[WM-HOP] Source ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
+        print("[WM-HOP] Source is hybrid: \(payment.isHybrid)")
+
+        guard let keyPair = keyPair else {
+            print("[WM-HOP] ERROR: Wallet not initialized")
+            throw WalletError.notInitialized
+        }
+
+        // Derive spending key for this payment
+        print("[WM-HOP] Deriving spending key for source payment...")
+        let spendingKey = try deriveSpendingKey(for: payment)
+        print("[WM-HOP] Spending key derived successfully")
+
+        if shieldService == nil {
+            shieldService = ShieldService(rpcClient: faucet)
+        }
+
+        let result = try await shieldService!.hop(
+            payment: payment,
+            stealthKeyPair: keyPair,
+            spendingKey: spendingKey,
+            lamports: lamports
+        )
+
+        print("[WM-HOP] Hop transaction completed")
+        print("[WM-HOP] New stealth address: \(result.destinationStealthAddress)")
+        print("[WM-HOP] New ephemeral key: \(result.ephemeralPublicKey.base58EncodedString)")
+        print("[WM-HOP] New amount: \(result.amount) lamports")
+        print("[WM-HOP] Signature: \(result.signature)")
+
+        // Remove source payment from pending
+        pendingPayments.removeAll { $0.id == payment.id }
+
+        // Add new stealth address as pending payment with incremented hop count
+        let newPayment = PendingPayment(
+            stealthAddress: result.destinationStealthAddress,
+            ephemeralPublicKey: result.ephemeralPublicKey,
+            mlkemCiphertext: result.mlkemCiphertext,
+            amount: result.amount,
+            tokenMint: nil,
+            viewTag: result.viewTag,
+            status: .received,
+            isShielded: true,  // Skip auto-settlement
+            hopCount: payment.hopCount + 1,
+            originalPaymentId: payment.originalPaymentId ?? payment.id,
+            parentPaymentId: payment.id
+        )
+
+        print("[WM-HOP] Created new payment:")
+        print("[WM-HOP]   ID: \(newPayment.id)")
+        print("[WM-HOP]   Address: \(newPayment.stealthAddress)")
+        print("[WM-HOP]   Ephemeral: \(newPayment.ephemeralPublicKey.base58EncodedString)")
+        print("[WM-HOP]   Is hybrid: \(newPayment.isHybrid)")
+
+        addPendingPayment(newPayment)
+
+        savePendingPayments()
+        updatePendingBalance()
+
+        print("[WM-HOP] Hop complete. pendingPayments count: \(pendingPayments.count)")
+
+        return result
+    }
+
+    /// Hop with amount in SOL (convenience)
+    /// - Parameters:
+    ///   - sol: Amount to hop in SOL (nil = all available)
+    ///   - payment: The pending payment to hop from
+    /// - Returns: HopResult with the new stealth address and transaction details
+    public func hopSol(_ sol: Double?, payment: PendingPayment) async throws -> HopResult {
+        let lamports = sol.map { UInt64($0 * 1_000_000_000) }
+        return try await hop(payment: payment, lamports: lamports)
     }
 
     // MARK: - Reset
