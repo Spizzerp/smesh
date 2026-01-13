@@ -17,6 +17,7 @@
 		APP008 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC008 /* SettingsView.swift */; };
 		APP009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = RES001 /* Assets.xcassets */; };
 		APP010 /* WalletBackupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC009 /* WalletBackupView.swift */; };
+		APP011 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC010 /* ActivityView.swift */; };
 		PKG001 /* StealthCore in Frameworks */ = {isa = PBXBuildFile; productRef = PKG002 /* StealthCore */; };
 /* End PBXBuildFile section */
 
@@ -33,6 +34,7 @@
 		SRC007 /* PendingPaymentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingPaymentsView.swift; sourceTree = "<group>"; };
 		SRC008 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		SRC009 /* WalletBackupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletBackupView.swift; sourceTree = "<group>"; };
+		SRC010 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -93,6 +95,7 @@
 				SRC007 /* PendingPaymentsView.swift */,
 				SRC008 /* SettingsView.swift */,
 				SRC009 /* WalletBackupView.swift */,
+				SRC010 /* ActivityView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -205,6 +208,7 @@
 				APP007 /* PendingPaymentsView.swift in Sources */,
 				APP008 /* SettingsView.swift in Sources */,
 				APP010 /* WalletBackupView.swift in Sources */,
+				APP011 /* ActivityView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -74,9 +74,9 @@ struct ContentView: View {
                         }
                         .tag(1)
 
-                    PendingPaymentsView()
+                    ActivityView()
                         .tabItem {
-                            Label("Pending", systemImage: "clock.arrow.circlepath")
+                            Label("Activity", systemImage: "clock.arrow.circlepath")
                         }
                         .tag(2)
 

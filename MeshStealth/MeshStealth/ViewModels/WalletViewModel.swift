@@ -13,6 +13,8 @@ class WalletViewModel: ObservableObject {
     @Published var pendingBalance: Double = 0
     @Published var pendingPayments: [PendingPayment] = []
     @Published var settledPayments: [PendingPayment] = []
+    @Published var activityItems: [ActivityItem] = []
+    @Published var outgoingPaymentIntents: [OutgoingPaymentIntent] = []
 
     // Main Wallet State
     @Published var mainWalletAddress: String?
@@ -82,6 +84,14 @@ class WalletViewModel: ObservableObject {
         walletManager.$settledPayments
             .assign(to: &$settledPayments)
 
+        // Bind activity items
+        walletManager.$activityItems
+            .assign(to: &$activityItems)
+
+        // Bind outgoing payment intents
+        walletManager.$outgoingPaymentIntents
+            .assign(to: &$outgoingPaymentIntents)
+
         // Bind main wallet state
         walletManager.$mainWalletBalance
             .map { Double($0) / 1_000_000_000 }
@@ -123,6 +133,11 @@ class WalletViewModel: ObservableObject {
     /// Reset wallet (for testing)
     func resetWallet() throws {
         try walletManager.reset()
+    }
+
+    /// Clear activity history (keeps wallet data)
+    func clearActivityHistory() {
+        walletManager.clearActivityHistory()
     }
 
     // MARK: - Main Wallet Actions

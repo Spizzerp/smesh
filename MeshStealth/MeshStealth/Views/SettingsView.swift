@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject var meshViewModel: MeshViewModel
 
     @State private var showingResetConfirmation = false
+    @State private var showingClearActivityConfirmation = false
     @State private var showingMetaAddress = false
     @State private var showingBackupWallet = false
 
@@ -127,6 +128,12 @@ struct SettingsView: View {
                 // Danger Zone
                 Section {
                     Button(role: .destructive) {
+                        showingClearActivityConfirmation = true
+                    } label: {
+                        Label("Clear Activity History", systemImage: "clock.arrow.circlepath")
+                    }
+
+                    Button(role: .destructive) {
                         showingResetConfirmation = true
                     } label: {
                         Label("Reset Wallet", systemImage: "trash")
@@ -134,7 +141,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Danger Zone")
                 } footer: {
-                    Text("This will delete all wallet data including your private keys. Make sure you have a backup!")
+                    Text("Clear Activity removes transaction history but keeps your wallet. Reset Wallet deletes everything including private keys.")
                 }
             }
             .navigationTitle("Settings")
@@ -146,6 +153,18 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingBackupWallet) {
                 WalletBackupView()
+            }
+            .confirmationDialog(
+                "Clear Activity History",
+                isPresented: $showingClearActivityConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Clear History", role: .destructive) {
+                    walletViewModel.clearActivityHistory()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will remove all transaction history. Your wallet and pending payments will not be affected.")
             }
             .confirmationDialog(
                 "Reset Wallet",

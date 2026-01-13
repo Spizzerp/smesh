@@ -70,11 +70,6 @@ struct WalletView: View {
                         )
                     }
 
-                    // Recent Activity
-                    RecentActivitySection(
-                        pendingPayments: walletViewModel.pendingPayments,
-                        settledPayments: walletViewModel.settledPayments
-                    )
                 }
                 .padding(.vertical)
             }
@@ -705,49 +700,6 @@ struct MixProgressIndicator: View {
     }
 }
 
-// MARK: - Recent Activity
-
-struct RecentActivitySection: View {
-    let pendingPayments: [PendingPayment]
-    let settledPayments: [PendingPayment]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Recent Activity")
-                .font(.headline)
-                .padding(.horizontal)
-
-            if pendingPayments.isEmpty && settledPayments.isEmpty {
-                EmptyActivityView()
-            } else {
-                LazyVStack(spacing: 8) {
-                    ForEach(pendingPayments.prefix(5)) { payment in
-                        PaymentRow(payment: payment)
-                    }
-                    ForEach(settledPayments.prefix(5)) { payment in
-                        PaymentRow(payment: payment)
-                    }
-                }
-                .padding(.horizontal)
-            }
-        }
-    }
-}
-
-struct EmptyActivityView: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "tray")
-                .font(.system(size: 40))
-                .foregroundColor(.secondary)
-            Text("No recent activity")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
-    }
-}
 
 struct PaymentRow: View {
     let payment: PendingPayment
@@ -802,6 +754,7 @@ struct PaymentRow: View {
 
     private var statusIcon: String {
         switch payment.status {
+        case .awaitingFunds: return "hourglass"
         case .received: return "clock.fill"
         case .settling: return "arrow.triangle.2.circlepath"
         case .settled: return "checkmark.circle.fill"
@@ -812,6 +765,7 @@ struct PaymentRow: View {
 
     private var statusColor: Color {
         switch payment.status {
+        case .awaitingFunds: return .purple
         case .received: return .orange
         case .settling: return .blue
         case .settled: return .green

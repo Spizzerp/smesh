@@ -46,6 +46,8 @@ public class MeshNetworkManager: ObservableObject {
     // MARK: - Private
 
     private let rpcClient: SolanaRPCClient
+    private let faucet: DevnetFaucet
+    private let estimatedFee: UInt64 = 5000  // 0.000005 SOL per signature
     private var cancellables = Set<AnyCancellable>()
 
     /// Publisher for incoming payments
@@ -63,6 +65,7 @@ public class MeshNetworkManager: ObservableObject {
     ) {
         // Initialize components
         self.rpcClient = SolanaRPCClient(cluster: cluster)
+        self.faucet = DevnetFaucet()
         self.encryptionService = PayloadEncryptionService()
         self.networkMonitor = NetworkMonitor()
         self.walletManager = walletManager ?? StealthWalletManager()
@@ -129,7 +132,9 @@ public class MeshNetworkManager: ObservableObject {
             Task { @MainActor in
                 // Refresh wallet balance when coming online
                 await self?.walletManager.refreshMainWalletBalance()
-                // Settle any pending payments
+                // Execute any queued outgoing payments
+                await self?.executeQueuedPayments()
+                // Settle any pending incoming payments
                 await self?.settlementService.settleAllPending()
             }
         }
@@ -162,6 +167,9 @@ public class MeshNetworkManager: ObservableObject {
     // MARK: - Sending Payments
 
     /// Send a stealth payment to a recipient via mesh
+    /// Works both online and offline:
+    /// - Online: Sends SOL on-chain immediately, then broadcasts mesh payload
+    /// - Offline: Queues on-chain transaction, broadcasts mesh payload for recipient
     /// - Parameters:
     ///   - recipientMetaAddress: Recipient's meta-address (classical or hybrid)
     ///   - amount: Amount in lamports
@@ -173,6 +181,13 @@ public class MeshNetworkManager: ObservableObject {
         tokenMint: String? = nil,
         memo: String? = nil
     ) async throws {
+        print("[MESH-SEND] Starting mesh payment of \(amount) lamports (online: \(isOnline))")
+
+        // Verify we have a wallet to send from
+        guard walletManager.mainWallet != nil else {
+            throw MeshNetworkError.walletNotInitialized
+        }
+
         // Parse meta-address
         let (spendingPubKey, viewingPubKey, mlkemPubKey) = try parseMetaAddress(recipientMetaAddress)
 
@@ -186,15 +201,17 @@ public class MeshNetworkManager: ObservableObject {
                 viewingPublicKey: viewingPubKey,
                 mlkemPublicKey: mlkemKey
             )
+            print("[MESH-SEND] Generated hybrid stealth address: \(stealthResult.stealthAddress)")
         } else {
             // Classical mode
             stealthResult = try StealthAddressGenerator.generateStealthAddress(
                 spendingPublicKey: spendingPubKey,
                 viewingPublicKey: viewingPubKey
             )
+            print("[MESH-SEND] Generated classical stealth address: \(stealthResult.stealthAddress)")
         }
 
-        // Create mesh payload
+        // Step 1: Create mesh payload and broadcast immediately (works offline)
         let payload = MeshStealthPayload(
             from: stealthResult,
             amount: amount,
@@ -202,8 +219,109 @@ public class MeshNetworkManager: ObservableObject {
             memo: memo
         )
 
-        // Send via mesh
+        // Broadcast via mesh first (this works offline via BLE)
         try await meshService.sendPayment(payload)
+        print("[MESH-SEND] Mesh payload broadcast complete")
+
+        // Step 2: Create outgoing payment intent
+        let intent = OutgoingPaymentIntent(
+            recipientMetaAddress: recipientMetaAddress,
+            stealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey,
+            mlkemCiphertext: stealthResult.mlkemCiphertext,
+            amount: amount,
+            memo: memo
+        )
+
+        // Step 3: Queue the payment intent (this also records activity)
+        walletManager.queueOutgoingPayment(intent)
+
+        // Step 4: If online, execute immediately; otherwise stay queued
+        if isOnline {
+            print("[MESH-SEND] Online - executing on-chain transfer immediately")
+            try await executeOutgoingPayment(intent)
+        } else {
+            print("[MESH-SEND] Offline - payment queued for later execution")
+        }
+    }
+
+    /// Execute a queued outgoing payment on-chain
+    private func executeOutgoingPayment(_ intent: OutgoingPaymentIntent) async throws {
+        guard let mainWallet = walletManager.mainWallet else {
+            throw MeshNetworkError.walletNotInitialized
+        }
+
+        // Update status to sending
+        walletManager.updateOutgoingIntent(id: intent.id, status: .sending)
+
+        do {
+            // Check balance
+            let mainAddress = await mainWallet.address
+            let balance = try await faucet.getBalance(address: mainAddress)
+            let requiredAmount = intent.amount + estimatedFee
+
+            guard balance >= requiredAmount else {
+                throw MeshNetworkError.insufficientBalance(available: balance, required: requiredAmount)
+            }
+
+            // Build and send transaction
+            let blockhash = try await faucet.getRecentBlockhash()
+            let fromPubkey = await mainWallet.publicKeyData
+            guard let toPubkey = Data(base58Decoding: intent.stealthAddress) else {
+                throw MeshNetworkError.invalidStealthAddress
+            }
+
+            let message = try SolanaTransaction.buildTransfer(
+                from: fromPubkey,
+                to: toPubkey,
+                lamports: intent.amount,
+                recentBlockhash: blockhash
+            )
+
+            let messageBytes = message.serialize()
+            let signature = try await mainWallet.sign(messageBytes)
+
+            let signedTx = try SolanaTransaction.buildSignedTransaction(
+                message: message,
+                signature: signature
+            )
+
+            let txSignature = try await faucet.sendTransaction(signedTx)
+            print("[MESH-SEND] Transaction submitted: \(txSignature)")
+
+            // Wait for confirmation
+            try await faucet.waitForConfirmation(signature: txSignature, timeout: 30)
+            print("[MESH-SEND] Transaction confirmed!")
+
+            // Update intent status
+            walletManager.updateOutgoingIntent(id: intent.id, status: .confirmed, signature: txSignature)
+
+            // Record activity
+            walletManager.updateActivityStatus(id: intent.id, status: .completed, signature: txSignature)
+
+            // Refresh balance
+            await walletManager.refreshMainWalletBalance()
+
+        } catch {
+            print("[MESH-SEND] Transaction failed: \(error)")
+            walletManager.updateOutgoingIntent(id: intent.id, status: .failed, error: error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// Execute all queued outgoing payments (called when coming online)
+    public func executeQueuedPayments() async {
+        let queuedPayments = walletManager.getQueuedOutgoingPayments()
+        print("[MESH-SEND] Executing \(queuedPayments.count) queued payments")
+
+        for intent in queuedPayments {
+            do {
+                try await executeOutgoingPayment(intent)
+            } catch {
+                print("[MESH-SEND] Failed to execute queued payment \(intent.id): \(error)")
+                // Continue with other payments
+            }
+        }
     }
 
     /// Send an encrypted payment (payload is encrypted to recipient)
@@ -335,6 +453,9 @@ public enum MeshNetworkError: Error, LocalizedError {
     case meshNotActive
     case encryptionFailed
     case sendFailed(Error)
+    case insufficientBalance(available: UInt64, required: UInt64)
+    case invalidStealthAddress
+    case signingFailed
 
     public var errorDescription: String? {
         switch self {
@@ -348,6 +469,14 @@ public enum MeshNetworkError: Error, LocalizedError {
             return "Failed to encrypt payment"
         case .sendFailed(let error):
             return "Failed to send payment: \(error.localizedDescription)"
+        case .insufficientBalance(let available, let required):
+            let availableSol = Double(available) / 1_000_000_000
+            let requiredSol = Double(required) / 1_000_000_000
+            return String(format: "Insufficient balance: %.4f SOL available, %.4f SOL required", availableSol, requiredSol)
+        case .invalidStealthAddress:
+            return "Invalid stealth address generated"
+        case .signingFailed:
+            return "Failed to sign transaction"
         }
     }
 }

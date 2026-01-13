@@ -163,6 +163,7 @@ struct StatusBadge: View {
 
     private var icon: String {
         switch status {
+        case .awaitingFunds: return "hourglass"
         case .received: return "clock.fill"
         case .settling: return "arrow.triangle.2.circlepath"
         case .settled: return "checkmark.circle.fill"
@@ -173,6 +174,7 @@ struct StatusBadge: View {
 
     private var color: Color {
         switch status {
+        case .awaitingFunds: return .purple
         case .received: return .orange
         case .settling: return .blue
         case .settled: return .green

@@ -219,13 +219,14 @@ public class MixingService: ObservableObject {
     /// Used automatically when unshielding to add privacy
     /// - Parameter payment: The payment to mix before unshield
     /// - Returns: The final payment after mixing (to use for unshield)
-    public func mixBeforeUnshield(payment: PendingPayment) async throws -> PendingPayment {
+    public func mixBeforeUnshield(payment: PendingPayment, parentActivityId: UUID? = nil) async throws -> PendingPayment {
         print("[MIX] ======== mixBeforeUnshield starting ========")
         print("[MIX] Payment ID: \(payment.id)")
         print("[MIX] Initial stealth address: \(payment.stealthAddress)")
         print("[MIX] Initial amount: \(payment.amount) lamports")
         print("[MIX] Initial ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
         print("[MIX] Is hybrid: \(payment.isHybrid)")
+        print("[MIX] Parent activity ID: \(parentActivityId?.uuidString ?? "none")")
 
         guard payment.amount > minBalanceForHop else {
             print("[MIX] ERROR: Insufficient balance (\(payment.amount) <= \(minBalanceForHop))")
@@ -251,7 +252,7 @@ public class MixingService: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(delaySeconds) * 1_000_000_000)
             }
 
-            let result = try await walletManager.hop(payment: currentPayment)
+            let result = try await walletManager.hop(payment: currentPayment, parentActivityId: parentActivityId)
             print("[MIX] Hop completed successfully!")
             print("[MIX] Result destination address: \(result.destinationStealthAddress)")
             print("[MIX] Result ephemeral key: \(result.ephemeralPublicKey.base58EncodedString)")
@@ -333,24 +334,37 @@ public class MixingService: ObservableObject {
             mixProgress = Double(index) / Double(totalPayments)
             statusMessage = "Mixing & unshielding payment \(index + 1) of \(totalPayments)..."
 
+            // Create unshield activity BEFORE mixing so hops can link to it
+            let unshieldActivityId = walletManager.recordUnshieldActivity(
+                amount: payment.amount,
+                stealthAddress: payment.stealthAddress,
+                signature: "pending"  // Will be updated after unshield completes
+            )
+
             do {
-                // Mix first (1-2 quick hops)
+                // Mix first (1-5 quick hops) - pass the unshield activity ID
                 print("[UNSHIELD-MIX] Starting mix phase...")
-                let mixedPayment = try await mixBeforeUnshield(payment: payment)
+                let mixedPayment = try await mixBeforeUnshield(payment: payment, parentActivityId: unshieldActivityId)
 
                 print("[UNSHIELD-MIX] Mix complete. Now unshielding...")
                 print("[UNSHIELD-MIX] Mixed payment ID: \(mixedPayment.id)")
                 print("[UNSHIELD-MIX] Mixed payment address: \(mixedPayment.stealthAddress)")
                 print("[UNSHIELD-MIX] Mixed payment ephemeral: \(mixedPayment.ephemeralPublicKey.base58EncodedString)")
 
-                // Then unshield to main wallet
-                let result = try await walletManager.unshield(payment: mixedPayment)
+                // Then unshield to main wallet (don't record activity again, just update)
+                let result = try await walletManager.unshield(payment: mixedPayment, skipActivityRecord: true)
                 print("[UNSHIELD-MIX] Unshield successful! Signature: \(result.signature)")
+
+                // Update the activity with the real signature
+                walletManager.updateActivityStatus(id: unshieldActivityId, status: .completed, signature: result.signature)
+
                 results.append(result)
             } catch {
                 // Log error but continue with other payments
                 print("[UNSHIELD-MIX] ERROR: Failed to mix+unshield payment \(payment.id): \(error)")
                 print("[UNSHIELD-MIX] Error details: \(error.localizedDescription)")
+                // Mark activity as failed
+                walletManager.updateActivityStatus(id: unshieldActivityId, status: .failed, error: error.localizedDescription)
             }
         }
 

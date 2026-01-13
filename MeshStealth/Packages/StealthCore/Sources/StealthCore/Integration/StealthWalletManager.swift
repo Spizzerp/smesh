@@ -3,11 +3,153 @@ import Combine
 
 /// Status of a pending stealth payment
 public enum PendingPaymentStatus: String, Codable, Sendable {
-    case received       // Received via mesh, awaiting settlement
-    case settling       // Settlement transaction in progress
-    case settled        // Successfully settled on-chain
-    case failed         // Settlement failed (will retry)
+    case awaitingFunds  // Received via mesh, waiting for on-chain funds from sender
+    case received       // On-chain balance confirmed, awaiting unshield
+    case settling       // Unshield transaction in progress
+    case settled        // Successfully unshielded to main wallet
+    case failed         // Failed (will retry)
     case expired        // Payment expired before settlement
+}
+
+// MARK: - Outgoing Payment Intent (Sender-Side Queue)
+
+/// Status of an outgoing payment intent
+public enum OutgoingPaymentStatus: String, Codable, Sendable {
+    case queued         // Waiting to send on-chain (offline)
+    case sending        // Transaction in progress
+    case confirmed      // Transaction confirmed on-chain
+    case failed         // Failed (will retry)
+}
+
+/// An outgoing payment intent queued for when sender comes online
+public struct OutgoingPaymentIntent: Codable, Sendable, Identifiable {
+    public let id: UUID
+    public let recipientMetaAddress: String
+    public let stealthAddress: String
+    public let ephemeralPublicKey: Data
+    public let mlkemCiphertext: Data?
+    public let amount: UInt64
+    public let memo: String?
+    public let createdAt: Date
+    public var status: OutgoingPaymentStatus
+    public var transactionSignature: String?
+    public var errorMessage: String?
+    public var attempts: Int
+
+    public init(
+        id: UUID = UUID(),
+        recipientMetaAddress: String,
+        stealthAddress: String,
+        ephemeralPublicKey: Data,
+        mlkemCiphertext: Data?,
+        amount: UInt64,
+        memo: String?,
+        createdAt: Date = Date(),
+        status: OutgoingPaymentStatus = .queued,
+        transactionSignature: String? = nil,
+        errorMessage: String? = nil,
+        attempts: Int = 0
+    ) {
+        self.id = id
+        self.recipientMetaAddress = recipientMetaAddress
+        self.stealthAddress = stealthAddress
+        self.ephemeralPublicKey = ephemeralPublicKey
+        self.mlkemCiphertext = mlkemCiphertext
+        self.amount = amount
+        self.memo = memo
+        self.createdAt = createdAt
+        self.status = status
+        self.transactionSignature = transactionSignature
+        self.errorMessage = errorMessage
+        self.attempts = attempts
+    }
+
+    /// Amount in SOL
+    public var amountInSol: Double {
+        Double(amount) / 1_000_000_000
+    }
+}
+
+// MARK: - Activity Feed
+
+/// Type of activity for the unified activity feed
+public enum ActivityType: String, Codable, Sendable {
+    case shield         // Main wallet → Stealth (self-deposit)
+    case unshield       // Stealth → Main wallet (withdraw)
+    case meshSend       // Outgoing payment to another user
+    case meshReceive    // Incoming payment from another user
+    case hop            // Stealth → Stealth (privacy mixing)
+    case airdrop        // Devnet faucet funding
+}
+
+/// Status of an activity item
+public enum ActivityStatus: String, Codable, Sendable {
+    case pending        // Awaiting action (sync, confirmation, etc.)
+    case inProgress     // Transaction in flight
+    case completed      // Successfully completed
+    case failed         // Failed
+}
+
+/// A unified activity item for the activity feed
+public struct ActivityItem: Codable, Sendable, Identifiable {
+    public let id: UUID
+    public let type: ActivityType
+    public let amount: UInt64
+    public let timestamp: Date
+    public var status: ActivityStatus
+
+    // Optional fields based on type
+    public let stealthAddress: String?
+    public var transactionSignature: String?
+    public let hopCount: Int?
+    public var errorMessage: String?
+
+    // For mesh payments
+    public let peerName: String?
+
+    // For linking hops to parent shield/unshield
+    public let parentActivityId: UUID?
+
+    public init(
+        id: UUID = UUID(),
+        type: ActivityType,
+        amount: UInt64,
+        timestamp: Date = Date(),
+        status: ActivityStatus = .pending,
+        stealthAddress: String? = nil,
+        transactionSignature: String? = nil,
+        hopCount: Int? = nil,
+        errorMessage: String? = nil,
+        peerName: String? = nil,
+        parentActivityId: UUID? = nil
+    ) {
+        self.id = id
+        self.type = type
+        self.amount = amount
+        self.timestamp = timestamp
+        self.status = status
+        self.stealthAddress = stealthAddress
+        self.transactionSignature = transactionSignature
+        self.hopCount = hopCount
+        self.errorMessage = errorMessage
+        self.peerName = peerName
+        self.parentActivityId = parentActivityId
+    }
+
+    /// Amount in SOL
+    public var amountInSol: Double {
+        Double(amount) / 1_000_000_000
+    }
+
+    /// Whether this item needs sync (pending and not completed)
+    public var needsSync: Bool {
+        status == .pending || status == .inProgress
+    }
+
+    /// Whether this is a child activity (hop belonging to a shield/unshield)
+    public var isChildActivity: Bool {
+        parentActivityId != nil
+    }
 }
 
 /// A pending stealth payment awaiting settlement
@@ -167,6 +309,12 @@ public class StealthWalletManager: ObservableObject {
     /// Whether airdrop is in progress
     @Published public private(set) var isAirdropping: Bool = false
 
+    /// Outgoing payment intents queued for when online
+    @Published public private(set) var outgoingPaymentIntents: [OutgoingPaymentIntent] = []
+
+    /// Unified activity feed
+    @Published public private(set) var activityItems: [ActivityItem] = []
+
     // MARK: - Private
 
     private let keychainService: KeychainService
@@ -174,6 +322,8 @@ public class StealthWalletManager: ObservableObject {
     private let faucet: DevnetFaucet
     private let pendingPaymentsKey = "meshstealth.pending_payments"
     private let settledPaymentsKey = "meshstealth.settled_payments"
+    private let outgoingIntentsKey = "meshstealth.outgoing_intents"
+    private let activityItemsKey = "meshstealth.activity_items"
 
     /// Publisher for new payments
     private let newPaymentSubject = PassthroughSubject<PendingPayment, Never>()
@@ -217,6 +367,8 @@ public class StealthWalletManager: ObservableObject {
         // Load pending payments from storage
         loadPendingPayments()
         loadSettledPayments()
+        loadOutgoingIntents()
+        loadActivityItems()
         updatePendingBalance()
 
         isInitialized = true
@@ -305,6 +457,14 @@ public class StealthWalletManager: ObservableObject {
     public func addPendingPayment(from payload: MeshStealthPayload) {
         let payment = PendingPayment(from: payload)
         addPendingPayment(payment)
+
+        // Record mesh receive activity (mesh payments are not shielded)
+        recordMeshReceiveActivity(
+            amount: payload.amount,
+            stealthAddress: payload.stealthAddress,
+            peerName: nil,
+            isPending: true  // Will be updated when funds arrive on-chain
+        )
     }
 
     /// Update payment status
@@ -496,6 +656,9 @@ public class StealthWalletManager: ObservableObject {
         try await faucet.waitForConfirmation(signature: signature, timeout: 30)
         await refreshMainWalletBalance()
 
+        // Record airdrop activity
+        recordAirdropActivity(amount: lamports, signature: signature)
+
         return signature
     }
 
@@ -546,8 +709,217 @@ public class StealthWalletManager: ObservableObject {
 
     private func updatePendingBalance() {
         pendingBalance = pendingPayments
-            .filter { $0.status == .received || $0.status == .failed }
+            .filter { $0.status == .received || $0.status == .failed || $0.status == .awaitingFunds }
             .reduce(0) { $0 + $1.amount }
+    }
+
+    // MARK: - Outgoing Payment Intent Persistence
+
+    private func saveOutgoingIntents() {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(outgoingPaymentIntents) {
+            userDefaults.set(data, forKey: outgoingIntentsKey)
+        }
+    }
+
+    private func loadOutgoingIntents() {
+        guard let data = userDefaults.data(forKey: outgoingIntentsKey) else {
+            return
+        }
+
+        let decoder = JSONDecoder()
+        if let loaded = try? decoder.decode([OutgoingPaymentIntent].self, from: data) {
+            outgoingPaymentIntents = loaded
+        }
+    }
+
+    // MARK: - Activity Items Persistence
+
+    private func saveActivityItems() {
+        let encoder = JSONEncoder()
+        // Only keep last 200 activity items
+        let toSave = Array(activityItems.prefix(200))
+        if let data = try? encoder.encode(toSave) {
+            userDefaults.set(data, forKey: activityItemsKey)
+        }
+    }
+
+    private func loadActivityItems() {
+        guard let data = userDefaults.data(forKey: activityItemsKey) else {
+            return
+        }
+
+        let decoder = JSONDecoder()
+        if let loaded = try? decoder.decode([ActivityItem].self, from: data) {
+            activityItems = loaded
+        }
+    }
+
+    // MARK: - Outgoing Payment Queue Management
+
+    /// Queue an outgoing payment for later execution (when offline)
+    public func queueOutgoingPayment(_ intent: OutgoingPaymentIntent) {
+        outgoingPaymentIntents.append(intent)
+        saveOutgoingIntents()
+
+        // Also add to activity feed
+        let activity = ActivityItem(
+            id: intent.id,
+            type: .meshSend,
+            amount: intent.amount,
+            timestamp: intent.createdAt,
+            status: .pending,
+            stealthAddress: intent.stealthAddress
+        )
+        addActivityItem(activity)
+    }
+
+    /// Update outgoing payment intent status
+    public func updateOutgoingIntent(
+        id: UUID,
+        status: OutgoingPaymentStatus,
+        signature: String? = nil,
+        error: String? = nil
+    ) {
+        guard let index = outgoingPaymentIntents.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        outgoingPaymentIntents[index].status = status
+        outgoingPaymentIntents[index].attempts += 1
+
+        if let sig = signature {
+            outgoingPaymentIntents[index].transactionSignature = sig
+        }
+
+        if let err = error {
+            outgoingPaymentIntents[index].errorMessage = err
+        }
+
+        saveOutgoingIntents()
+
+        // Update corresponding activity item
+        let activityStatus: ActivityStatus = switch status {
+        case .queued: .pending
+        case .sending: .inProgress
+        case .confirmed: .completed
+        case .failed: .failed
+        }
+        updateActivityStatus(id: id, status: activityStatus, signature: signature, error: error)
+    }
+
+    /// Get queued outgoing payments that need to be executed
+    public func getQueuedOutgoingPayments() -> [OutgoingPaymentIntent] {
+        outgoingPaymentIntents.filter { $0.status == .queued || $0.status == .failed }
+    }
+
+    /// Remove confirmed outgoing payment from queue
+    public func removeConfirmedOutgoingPayment(id: UUID) {
+        outgoingPaymentIntents.removeAll { $0.id == id }
+        saveOutgoingIntents()
+    }
+
+    // MARK: - Activity Feed Management
+
+    /// Add an activity item to the feed
+    public func addActivityItem(_ item: ActivityItem) {
+        // Insert at the beginning (most recent first)
+        activityItems.insert(item, at: 0)
+        saveActivityItems()
+    }
+
+    /// Update an activity item's status
+    public func updateActivityStatus(
+        id: UUID,
+        status: ActivityStatus,
+        signature: String? = nil,
+        error: String? = nil
+    ) {
+        guard let index = activityItems.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        activityItems[index].status = status
+
+        if let sig = signature {
+            activityItems[index].transactionSignature = sig
+        }
+
+        if let err = error {
+            activityItems[index].errorMessage = err
+        }
+
+        saveActivityItems()
+    }
+
+    /// Record a shield activity
+    @discardableResult
+    public func recordShieldActivity(amount: UInt64, stealthAddress: String, signature: String) -> UUID {
+        let activity = ActivityItem(
+            type: .shield,
+            amount: amount,
+            status: .completed,
+            stealthAddress: stealthAddress,
+            transactionSignature: signature
+        )
+        addActivityItem(activity)
+        return activity.id
+    }
+
+    /// Record an unshield activity
+    @discardableResult
+    public func recordUnshieldActivity(amount: UInt64, stealthAddress: String, signature: String) -> UUID {
+        let activity = ActivityItem(
+            type: .unshield,
+            amount: amount,
+            status: .completed,
+            stealthAddress: stealthAddress,
+            transactionSignature: signature
+        )
+        addActivityItem(activity)
+        return activity.id
+    }
+
+    /// Record a mesh receive activity
+    public func recordMeshReceiveActivity(amount: UInt64, stealthAddress: String, peerName: String? = nil, isPending: Bool = false) {
+        let activity = ActivityItem(
+            type: .meshReceive,
+            amount: amount,
+            status: isPending ? .pending : .completed,
+            stealthAddress: stealthAddress,
+            peerName: peerName
+        )
+        addActivityItem(activity)
+    }
+
+    /// Record an airdrop activity
+    public func recordAirdropActivity(amount: UInt64, signature: String) {
+        let activity = ActivityItem(
+            type: .airdrop,
+            amount: amount,
+            status: .completed,
+            transactionSignature: signature
+        )
+        addActivityItem(activity)
+    }
+
+    /// Record a hop activity
+    public func recordHopActivity(amount: UInt64, stealthAddress: String, hopCount: Int, signature: String, parentActivityId: UUID? = nil) {
+        let activity = ActivityItem(
+            type: .hop,
+            amount: amount,
+            status: .completed,
+            stealthAddress: stealthAddress,
+            transactionSignature: signature,
+            hopCount: hopCount,
+            parentActivityId: parentActivityId
+        )
+        addActivityItem(activity)
+    }
+
+    /// Get activity items that need sync (pending or in progress)
+    public var pendingSyncItems: [ActivityItem] {
+        activityItems.filter { $0.needsSync }
     }
 
     // MARK: - Shield Operations
@@ -589,6 +961,9 @@ public class StealthWalletManager: ObservableObject {
         )
         addPendingPayment(currentPayment)
 
+        // Record shield activity BEFORE hops so we have the parent ID
+        let shieldActivityId = recordShieldActivity(amount: lamports, stealthAddress: result.stealthAddress, signature: result.signature)
+
         // Step 3: Auto-mix with 1-5 random hops for privacy
         let hopCount = Int.random(in: 1...5)
         print("[SHIELD] Starting auto-mix with \(hopCount) hops")
@@ -603,7 +978,7 @@ public class StealthWalletManager: ObservableObject {
 
             do {
                 print("[SHIELD] Performing auto-mix hop \(i + 1) of \(hopCount)")
-                let hopResult = try await hop(payment: currentPayment)
+                let hopResult = try await hop(payment: currentPayment, parentActivityId: shieldActivityId)
 
                 // Wait for state propagation
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -646,14 +1021,14 @@ public class StealthWalletManager: ObservableObject {
     ///   - payment: The pending payment to unshield
     ///   - lamports: Amount to unshield (nil = all available)
     /// - Returns: UnshieldResult with transaction details
-    public func unshield(payment: PendingPayment, lamports: UInt64? = nil) async throws -> UnshieldResult {
+    public func unshield(payment: PendingPayment, lamports: UInt64? = nil, skipActivityRecord: Bool = false) async throws -> UnshieldResult {
         print("[WM-UNSHIELD] Starting unshield for payment \(payment.id)")
         print("[WM-UNSHIELD] Stealth address: \(payment.stealthAddress)")
         print("[WM-UNSHIELD] Ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
         print("[WM-UNSHIELD] Is hybrid: \(payment.isHybrid)")
         print("[WM-UNSHIELD] Hop count: \(payment.hopCount)")
 
-        guard let mainWallet = mainWallet, let keyPair = keyPair else {
+        guard let mainWallet = mainWallet, let _ = keyPair else {
             print("[WM-UNSHIELD] ERROR: Wallet not initialized")
             throw WalletError.notInitialized
         }
@@ -684,6 +1059,11 @@ public class StealthWalletManager: ObservableObject {
         )
 
         print("[WM-UNSHIELD] Unshield transaction completed: \(result.signature)")
+
+        // Record unshield activity (unless already recorded by caller)
+        if !skipActivityRecord {
+            recordUnshieldActivity(amount: result.amount, stealthAddress: payment.stealthAddress, signature: result.signature)
+        }
 
         // Remove from pending payments and refresh balances
         pendingPayments.removeAll { $0.id == payment.id }
@@ -737,8 +1117,9 @@ public class StealthWalletManager: ObservableObject {
     /// - Parameters:
     ///   - payment: The pending payment to hop from
     ///   - lamports: Amount to hop (nil = all available)
+    ///   - parentActivityId: Optional parent activity ID to link this hop to (for shield/unshield grouping)
     /// - Returns: HopResult with the new stealth address and transaction details
-    public func hop(payment: PendingPayment, lamports: UInt64? = nil) async throws -> HopResult {
+    public func hop(payment: PendingPayment, lamports: UInt64? = nil, parentActivityId: UUID? = nil) async throws -> HopResult {
         print("[WM-HOP] Starting hop for payment \(payment.id)")
         print("[WM-HOP] Source stealth address: \(payment.stealthAddress)")
         print("[WM-HOP] Source ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
@@ -800,6 +1181,15 @@ public class StealthWalletManager: ObservableObject {
         savePendingPayments()
         updatePendingBalance()
 
+        // Record hop activity
+        recordHopActivity(
+            amount: result.amount,
+            stealthAddress: result.destinationStealthAddress,
+            hopCount: newPayment.hopCount,
+            signature: result.signature,
+            parentActivityId: parentActivityId
+        )
+
         print("[WM-HOP] Hop complete. pendingPayments count: \(pendingPayments.count)")
 
         return result
@@ -818,6 +1208,14 @@ public class StealthWalletManager: ObservableObject {
     // MARK: - Reset
 
     /// Clear all wallet data (for testing/reset)
+    /// Clear activity history (keeps wallet and pending payments)
+    public func clearActivityHistory() {
+        activityItems = []
+        outgoingPaymentIntents = []
+        userDefaults.removeObject(forKey: activityItemsKey)
+        userDefaults.removeObject(forKey: outgoingIntentsKey)
+    }
+
     public func reset() throws {
         try keychainService.deleteKeyPair()
         try? keychainService.deleteMainWalletKey()
@@ -826,11 +1224,15 @@ public class StealthWalletManager: ObservableObject {
         mainWalletBalance = 0
         pendingPayments = []
         settledPayments = []
+        activityItems = []
+        outgoingPaymentIntents = []
         pendingBalance = 0
         isInitialized = false
 
         userDefaults.removeObject(forKey: pendingPaymentsKey)
         userDefaults.removeObject(forKey: settledPaymentsKey)
+        userDefaults.removeObject(forKey: activityItemsKey)
+        userDefaults.removeObject(forKey: outgoingIntentsKey)
     }
 }
 
