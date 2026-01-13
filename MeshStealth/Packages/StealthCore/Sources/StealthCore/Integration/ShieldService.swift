@@ -477,4 +477,95 @@ public actor ShieldService {
             lamports: lamports
         )
     }
+
+    // MARK: - Generic Stealth Transfer (for splits/recombines)
+
+    /// Send funds from a stealth address to any destination address
+    /// Used for split and recombine operations during mixing
+    /// - Parameters:
+    ///   - fromStealthAddress: Source stealth address
+    ///   - spendingKey: The spending key for the source stealth address
+    ///   - toAddress: Destination address (can be stealth or regular)
+    ///   - lamports: Amount to send
+    /// - Returns: Transaction signature
+    public func sendFromStealth(
+        fromStealthAddress: String,
+        spendingKey: Data,
+        toAddress: String,
+        lamports: UInt64
+    ) async throws -> String {
+        print("[SEND-STEALTH] Sending \(lamports) lamports")
+        print("[SEND-STEALTH] From: \(fromStealthAddress)")
+        print("[SEND-STEALTH] To: \(toAddress)")
+
+        // 1. Check source balance
+        let sourceBalance = try await rpcClient.getBalance(address: fromStealthAddress)
+
+        guard sourceBalance >= lamports + estimatedFee else {
+            throw ShieldError.insufficientBalance(available: sourceBalance, required: lamports + estimatedFee)
+        }
+
+        // 2. Create wallet from spending key
+        let sourceWallet: SolanaWallet
+        do {
+            sourceWallet = try SolanaWallet(stealthScalar: spendingKey)
+        } catch {
+            throw ShieldError.keyDerivationFailed
+        }
+
+        // 3. Verify the derived wallet matches the source address
+        let derivedAddress = await sourceWallet.address
+        guard derivedAddress == fromStealthAddress else {
+            print("[SEND-STEALTH] Address mismatch!")
+            print("[SEND-STEALTH]   Expected: \(fromStealthAddress)")
+            print("[SEND-STEALTH]   Derived:  \(derivedAddress)")
+            throw ShieldError.keyDerivationFailed
+        }
+
+        // 4. Get recent blockhash
+        let blockhash = try await rpcClient.getRecentBlockhash()
+
+        // 5. Build transfer transaction
+        let fromPubkey = await sourceWallet.publicKeyData
+        guard let toPubkey = Data(base58Decoding: toAddress) else {
+            throw ShieldError.transactionFailed("Invalid destination address")
+        }
+
+        let message = try SolanaTransaction.buildTransfer(
+            from: fromPubkey,
+            to: toPubkey,
+            lamports: lamports,
+            recentBlockhash: blockhash
+        )
+
+        // 6. Sign with source wallet
+        let messageBytes = message.serialize()
+        let signature: Data
+        do {
+            signature = try await sourceWallet.sign(messageBytes)
+        } catch {
+            throw ShieldError.signingFailed
+        }
+
+        // 7. Build and send signed transaction
+        let signedTx = try SolanaTransaction.buildSignedTransaction(
+            message: message,
+            signature: signature
+        )
+
+        let txSignature: String
+        do {
+            txSignature = try await rpcClient.sendTransaction(signedTx)
+        } catch let error as FaucetError {
+            throw ShieldError.transactionFailed(error.localizedDescription)
+        } catch {
+            throw ShieldError.transactionFailed(error.localizedDescription)
+        }
+
+        // 8. Wait for confirmation
+        try await rpcClient.waitForConfirmation(signature: txSignature, timeout: 30)
+
+        print("[SEND-STEALTH] Transaction confirmed: \(txSignature)")
+        return txSignature
+    }
 }

@@ -206,6 +206,12 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
     /// ID of the parent payment (if this is a hop result) - nil if not a hop
     public let parentPaymentId: UUID?
 
+    /// ID grouping payments that were split from the same source (for mixing)
+    public let splitGroupId: UUID?
+
+    /// Whether this payment is part of a split (for mixing)
+    public let isSplitPart: Bool
+
     public init(
         id: UUID = UUID(),
         stealthAddress: String,
@@ -223,7 +229,9 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         isShielded: Bool = false,
         hopCount: Int = 0,
         originalPaymentId: UUID? = nil,
-        parentPaymentId: UUID? = nil
+        parentPaymentId: UUID? = nil,
+        splitGroupId: UUID? = nil,
+        isSplitPart: Bool = false
     ) {
         self.id = id
         self.stealthAddress = stealthAddress
@@ -242,6 +250,8 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         self.hopCount = hopCount
         self.originalPaymentId = originalPaymentId
         self.parentPaymentId = parentPaymentId
+        self.splitGroupId = splitGroupId
+        self.isSplitPart = isSplitPart
     }
 
     /// Create from mesh payload
@@ -263,6 +273,8 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         self.hopCount = 0
         self.originalPaymentId = nil
         self.parentPaymentId = nil
+        self.splitGroupId = nil
+        self.isSplitPart = false
     }
 
     /// Whether this payment is hybrid (post-quantum)
@@ -927,7 +939,7 @@ public class StealthWalletManager: ObservableObject {
     private var shieldService: ShieldService?
 
     /// Shield funds from main wallet to a stealth address (self-deposit)
-    /// Automatically performs 1-5 random hops after the initial shield for privacy
+    /// Automatically performs split/hop/recombine mixing after the initial shield for privacy
     /// - Parameter lamports: Amount to shield in lamports
     /// - Returns: ShieldResult with transaction details
     public func shield(lamports: UInt64) async throws -> ShieldResult {
@@ -949,7 +961,7 @@ public class StealthWalletManager: ObservableObject {
         print("[SHIELD] Initial shield complete: \(result.stealthAddress)")
 
         // Step 2: Create initial payment record
-        var currentPayment = PendingPayment(
+        let initialPayment = PendingPayment(
             stealthAddress: result.stealthAddress,
             ephemeralPublicKey: result.ephemeralPublicKey,
             mlkemCiphertext: result.mlkemCiphertext,
@@ -959,53 +971,142 @@ public class StealthWalletManager: ObservableObject {
             status: .received,
             isShielded: true
         )
-        addPendingPayment(currentPayment)
+        addPendingPayment(initialPayment)
 
-        // Record shield activity BEFORE hops so we have the parent ID
+        // Record shield activity BEFORE mixing so we have the parent ID
         let shieldActivityId = recordShieldActivity(amount: lamports, stealthAddress: result.stealthAddress, signature: result.signature)
 
-        // Step 3: Auto-mix with 1-5 random hops for privacy
-        let hopCount = Int.random(in: 1...5)
-        print("[SHIELD] Starting auto-mix with \(hopCount) hops")
+        // Step 3: Auto-mix using split/hop/recombine for proper privacy
+        // Minimum amount for split mixing (0.01 SOL)
+        let minForSplitMix: UInt64 = 10_000_000
 
-        for i in 0..<hopCount {
-            // Brief delay between hops (2-5 seconds)
-            if i > 0 {
-                let delay = Int.random(in: 2...5)
-                print("[SHIELD] Waiting \(delay)s before hop \(i + 1)...")
-                try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
-            }
-
+        if initialPayment.amount >= minForSplitMix {
+            // Use proper split/hop/recombine mixing
+            print("[SHIELD] Starting split/hop/recombine mixing")
             do {
-                print("[SHIELD] Performing auto-mix hop \(i + 1) of \(hopCount)")
-                let hopResult = try await hop(payment: currentPayment, parentActivityId: shieldActivityId)
+                let finalPayment = try await mixAfterShield(
+                    payment: initialPayment,
+                    parentActivityId: shieldActivityId
+                )
+                print("[SHIELD] Mix complete. Final payment at: \(finalPayment.stealthAddress)")
+            } catch {
+                print("[SHIELD] Mix failed: \(error), keeping initial payment")
+            }
+        } else {
+            // For small amounts, do simple hops (1-3)
+            print("[SHIELD] Amount too small for split mixing, using simple hops")
+            var currentPayment = initialPayment
+            let hopCount = Int.random(in: 1...3)
 
-                // Wait for state propagation
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            for i in 0..<hopCount {
+                if i > 0 {
+                    let delay = Int.random(in: 2...4)
+                    try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+                }
 
-                // Find the new payment created by hop
-                guard let newPayment = pendingPayments.first(where: {
-                    $0.stealthAddress == hopResult.destinationStealthAddress
-                }) else {
-                    print("[SHIELD] Warning: Could not find new payment after hop \(i + 1), stopping auto-mix")
+                do {
+                    let hopResult = try await hop(payment: currentPayment, parentActivityId: shieldActivityId)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+                    guard let newPayment = pendingPayments.first(where: {
+                        $0.stealthAddress == hopResult.destinationStealthAddress
+                    }) else {
+                        break
+                    }
+                    currentPayment = newPayment
+                } catch {
+                    print("[SHIELD] Hop \(i + 1) failed: \(error), stopping")
                     break
                 }
-                currentPayment = newPayment
-                print("[SHIELD] Auto-mix hop \(i + 1) complete: \(currentPayment.stealthAddress)")
-            } catch {
-                // If hop fails, stop hopping but keep existing payment
-                print("[SHIELD] Auto-mix hop \(i + 1) failed: \(error), stopping auto-mix")
-                break
             }
+            print("[SHIELD] Simple mix complete. Final payment at: \(currentPayment.stealthAddress)")
         }
 
-        print("[SHIELD] Auto-mix complete. Final payment at: \(currentPayment.stealthAddress)")
-
-        // Refresh balance after all hops complete
+        // Refresh balance after mixing complete
         try await Task.sleep(nanoseconds: 1_000_000_000)
         await refreshMainWalletBalance()
 
         return result
+    }
+
+    /// Mix a payment after shielding using split/hop/recombine
+    /// - Parameters:
+    ///   - payment: The shielded payment to mix
+    ///   - parentActivityId: Parent activity ID for grouping
+    /// - Returns: Final payment after mixing
+    private func mixAfterShield(payment: PendingPayment, parentActivityId: UUID) async throws -> PendingPayment {
+        print("[SHIELD-MIX] Starting split/hop/recombine for shielded payment")
+
+        // Phase 1: SPLIT into 2-4 random parts
+        let numParts = Int.random(in: 2...4)
+        print("[SHIELD-MIX] Phase 1: Splitting into \(numParts) parts")
+
+        let splitPayments = try await splitPayment(
+            payment: payment,
+            parts: numParts,
+            parentActivityId: parentActivityId
+        )
+
+        print("[SHIELD-MIX] Split complete: \(splitPayments.count) parts")
+        for (idx, p) in splitPayments.enumerated() {
+            print("[SHIELD-MIX]   Part \(idx + 1): \(p.amount) lamports")
+        }
+
+        // Brief pause after split
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+        // Phase 2: HOP each split independently (1-3 hops each)
+        print("[SHIELD-MIX] Phase 2: Hopping each split")
+        var hoppedPayments: [PendingPayment] = []
+
+        for (idx, splitPayment) in splitPayments.enumerated() {
+            let hopsForThisSplit = Int.random(in: 1...3)
+            var currentPayment = splitPayment
+
+            for hopIdx in 0..<hopsForThisSplit {
+                if hopIdx > 0 {
+                    let delay = Int.random(in: 1...3)
+                    try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+                }
+
+                do {
+                    let result = try await hop(payment: currentPayment, parentActivityId: parentActivityId)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+                    guard let newPayment = pendingPayments.first(where: {
+                        $0.stealthAddress == result.destinationStealthAddress
+                    }) else {
+                        break
+                    }
+                    currentPayment = newPayment
+                } catch {
+                    print("[SHIELD-MIX] Hop failed for split \(idx + 1): \(error)")
+                    break
+                }
+            }
+
+            hoppedPayments.append(currentPayment)
+
+            if idx < splitPayments.count - 1 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+
+        print("[SHIELD-MIX] Hopping complete. \(hoppedPayments.count) payments ready for recombine")
+
+        // Phase 3: RECOMBINE all splits into a single address
+        print("[SHIELD-MIX] Phase 3: Recombining")
+
+        let finalPayment = try await recombinePayments(
+            hoppedPayments,
+            parentActivityId: parentActivityId
+        )
+
+        print("[SHIELD-MIX] Recombine complete!")
+        print("[SHIELD-MIX] Final address: \(finalPayment.stealthAddress)")
+        print("[SHIELD-MIX] Final amount: \(finalPayment.amount) lamports")
+
+        return finalPayment
     }
 
     /// Shield funds with amount in SOL (convenience)
@@ -1205,6 +1306,273 @@ public class StealthWalletManager: ObservableObject {
         return try await hop(payment: payment, lamports: lamports)
     }
 
+    // MARK: - Split Operations (for mixing)
+
+    /// Minimum lamports per split (0.001 SOL)
+    private let minSplitAmount: UInt64 = 1_000_000
+
+    /// Fee per transaction (approximately 0.00001 SOL)
+    private let feePerTransaction: UInt64 = 10_000
+
+    /// Split a payment into multiple random-sized parts for privacy mixing
+    /// - Parameters:
+    ///   - payment: Source payment to split
+    ///   - parts: Number of parts (default: random 2-4)
+    ///   - parentActivityId: Optional parent activity ID to link splits to
+    /// - Returns: Array of new payments representing the splits
+    public func splitPayment(
+        payment: PendingPayment,
+        parts: Int? = nil,
+        parentActivityId: UUID? = nil
+    ) async throws -> [PendingPayment] {
+        print("[SPLIT] ======== splitPayment starting ========")
+        print("[SPLIT] Source payment ID: \(payment.id)")
+        print("[SPLIT] Source amount: \(payment.amount) lamports")
+
+        guard let keyPair = keyPair else {
+            throw WalletError.notInitialized
+        }
+
+        // Determine number of splits (2-4 if not specified)
+        let numParts = parts ?? Int.random(in: 2...4)
+        print("[SPLIT] Splitting into \(numParts) parts")
+
+        // Calculate available amount after accounting for transaction fees
+        let totalFees = UInt64(numParts) * feePerTransaction
+        guard payment.amount > totalFees + (UInt64(numParts) * minSplitAmount) else {
+            print("[SPLIT] ERROR: Insufficient balance for \(numParts) splits")
+            throw WalletError.insufficientBalance
+        }
+
+        let availableAmount = payment.amount - totalFees
+
+        // Generate random split amounts
+        let splitAmounts = generateRandomSplits(totalAmount: availableAmount, parts: numParts)
+        print("[SPLIT] Split amounts: \(splitAmounts.map { "\($0) lamports" })")
+
+        // Derive spending key for the source payment
+        let spendingKey = try deriveSpendingKey(for: payment)
+
+        if shieldService == nil {
+            shieldService = ShieldService(rpcClient: faucet)
+        }
+
+        // Create a group ID to link all splits together
+        let splitGroupId = UUID()
+        var newPayments: [PendingPayment] = []
+
+        // Execute splits sequentially (could optimize to parallel later)
+        for (index, amount) in splitAmounts.enumerated() {
+            print("[SPLIT] Creating split \(index + 1) of \(numParts): \(amount) lamports")
+
+            // Generate new stealth address for this split (use hybrid meta-address)
+            let metaAddress = keyPair.hybridMetaAddressString
+            let stealthResult = try StealthAddressGenerator.generateStealthAddressAuto(
+                metaAddressString: metaAddress
+            )
+
+            // Send funds to the new stealth address
+            let signature = try await shieldService!.sendFromStealth(
+                fromStealthAddress: payment.stealthAddress,
+                spendingKey: spendingKey,
+                toAddress: stealthResult.stealthAddress,
+                lamports: amount
+            )
+
+            print("[SPLIT] Split \(index + 1) transaction: \(signature)")
+
+            // Create new pending payment for this split
+            let newPayment = PendingPayment(
+                stealthAddress: stealthResult.stealthAddress,
+                ephemeralPublicKey: stealthResult.ephemeralPublicKey,
+                mlkemCiphertext: stealthResult.mlkemCiphertext,
+                amount: amount,
+                tokenMint: nil,
+                viewTag: stealthResult.viewTag,
+                status: .received,
+                isShielded: true,
+                hopCount: payment.hopCount,  // Preserve hop count
+                originalPaymentId: payment.originalPaymentId ?? payment.id,
+                parentPaymentId: payment.id,
+                splitGroupId: splitGroupId,
+                isSplitPart: true
+            )
+
+            newPayments.append(newPayment)
+            addPendingPayment(newPayment)
+
+            // Record activity for this split (as a hop with split indication)
+            recordHopActivity(
+                amount: amount,
+                stealthAddress: stealthResult.stealthAddress,
+                hopCount: newPayment.hopCount,
+                signature: signature,
+                parentActivityId: parentActivityId
+            )
+
+            // Brief delay between splits to avoid rate limiting
+            if index < splitAmounts.count - 1 {
+                try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
+            }
+        }
+
+        // Remove the original payment (it's now split)
+        pendingPayments.removeAll { $0.id == payment.id }
+        savePendingPayments()
+        updatePendingBalance()
+
+        print("[SPLIT] ======== splitPayment complete ========")
+        print("[SPLIT] Created \(newPayments.count) split payments")
+        return newPayments
+    }
+
+    /// Generate random amounts that sum to the total
+    private func generateRandomSplits(totalAmount: UInt64, parts: Int) -> [UInt64] {
+        guard parts > 1 else { return [totalAmount] }
+
+        // Generate random weights
+        let weights = (0..<parts).map { _ in Double.random(in: 0.15...1.0) }
+        let totalWeight = weights.reduce(0, +)
+
+        // Normalize to proportions
+        let proportions = weights.map { $0 / totalWeight }
+
+        // Calculate amounts ensuring minimum per split
+        var amounts = proportions.map { UInt64(Double(totalAmount) * $0) }
+
+        // Ensure minimum amount per split
+        for i in 0..<amounts.count {
+            if amounts[i] < minSplitAmount {
+                amounts[i] = minSplitAmount
+            }
+        }
+
+        // Adjust to ensure total matches (put remainder in last split)
+        let currentTotal = amounts.reduce(0, +)
+        if currentTotal < totalAmount {
+            amounts[amounts.count - 1] += (totalAmount - currentTotal)
+        } else if currentTotal > totalAmount {
+            // Reduce from largest splits if we're over
+            let excess = currentTotal - totalAmount
+            if let maxIdx = amounts.enumerated().max(by: { $0.element < $1.element })?.offset,
+               amounts[maxIdx] > minSplitAmount + excess {
+                amounts[maxIdx] -= excess
+            }
+        }
+
+        return amounts
+    }
+
+    // MARK: - Recombine Operations (for mixing)
+
+    /// Recombine multiple payments into a single stealth address
+    /// - Parameters:
+    ///   - payments: Array of payments to combine
+    ///   - parentActivityId: Optional parent activity ID to link recombine to
+    /// - Returns: Single combined payment
+    public func recombinePayments(
+        _ payments: [PendingPayment],
+        parentActivityId: UUID? = nil
+    ) async throws -> PendingPayment {
+        print("[RECOMBINE] ======== recombinePayments starting ========")
+        print("[RECOMBINE] Combining \(payments.count) payments")
+
+        guard !payments.isEmpty else {
+            throw WalletError.paymentNotFound
+        }
+
+        guard let keyPair = keyPair else {
+            throw WalletError.notInitialized
+        }
+
+        if shieldService == nil {
+            shieldService = ShieldService(rpcClient: faucet)
+        }
+
+        // Generate a single new stealth address for the combined funds (use hybrid meta-address)
+        let metaAddress = keyPair.hybridMetaAddressString
+        let finalResult = try StealthAddressGenerator.generateStealthAddressAuto(
+            metaAddressString: metaAddress
+        )
+
+        print("[RECOMBINE] Final destination: \(finalResult.stealthAddress)")
+
+        var totalAmount: UInt64 = 0
+        var signatures: [String] = []
+
+        // Send each payment to the combined address
+        for (index, payment) in payments.enumerated() {
+            print("[RECOMBINE] Processing payment \(index + 1) of \(payments.count)")
+            print("[RECOMBINE]   Source: \(payment.stealthAddress)")
+            print("[RECOMBINE]   Amount: \(payment.amount) lamports")
+
+            // Account for transaction fee
+            let sendAmount = payment.amount > feePerTransaction
+                ? payment.amount - feePerTransaction
+                : payment.amount
+
+            // Derive spending key for this payment
+            let spendingKey = try deriveSpendingKey(for: payment)
+
+            // Send to the combined address
+            let signature = try await shieldService!.sendFromStealth(
+                fromStealthAddress: payment.stealthAddress,
+                spendingKey: spendingKey,
+                toAddress: finalResult.stealthAddress,
+                lamports: sendAmount
+            )
+
+            print("[RECOMBINE] Transaction \(index + 1): \(signature)")
+            signatures.append(signature)
+            totalAmount += sendAmount
+
+            // Remove this payment from pending
+            pendingPayments.removeAll { $0.id == payment.id }
+
+            // Brief delay between transactions
+            if index < payments.count - 1 {
+                try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
+            }
+        }
+
+        // Create the combined payment
+        let maxHopCount = payments.map { $0.hopCount }.max() ?? 0
+        let combinedPayment = PendingPayment(
+            stealthAddress: finalResult.stealthAddress,
+            ephemeralPublicKey: finalResult.ephemeralPublicKey,
+            mlkemCiphertext: finalResult.mlkemCiphertext,
+            amount: totalAmount,
+            tokenMint: nil,
+            viewTag: finalResult.viewTag,
+            status: .received,
+            isShielded: true,
+            hopCount: maxHopCount + 1,  // Increment hop count for recombine
+            originalPaymentId: payments.first?.originalPaymentId,
+            parentPaymentId: nil,  // No single parent for recombined
+            splitGroupId: nil,  // Recombined payment is no longer split
+            isSplitPart: false
+        )
+
+        addPendingPayment(combinedPayment)
+        savePendingPayments()
+        updatePendingBalance()
+
+        // Record recombine as a hop activity
+        recordHopActivity(
+            amount: totalAmount,
+            stealthAddress: finalResult.stealthAddress,
+            hopCount: combinedPayment.hopCount,
+            signature: signatures.first ?? "combined",
+            parentActivityId: parentActivityId
+        )
+
+        print("[RECOMBINE] ======== recombinePayments complete ========")
+        print("[RECOMBINE] Combined payment: \(combinedPayment.stealthAddress)")
+        print("[RECOMBINE] Total amount: \(totalAmount) lamports")
+
+        return combinedPayment
+    }
+
     // MARK: - Reset
 
     /// Clear all wallet data (for testing/reset)
@@ -1246,6 +1614,7 @@ public enum WalletError: Error, LocalizedError {
     case invalidMnemonic
     case invalidKeyLength
     case signingFailed
+    case insufficientBalance
 
     public var errorDescription: String? {
         switch self {
@@ -1263,6 +1632,8 @@ public enum WalletError: Error, LocalizedError {
             return "Invalid key length (expected 32 or 64 bytes)"
         case .signingFailed:
             return "Failed to sign message"
+        case .insufficientBalance:
+            return "Insufficient balance for operation"
         }
     }
 }

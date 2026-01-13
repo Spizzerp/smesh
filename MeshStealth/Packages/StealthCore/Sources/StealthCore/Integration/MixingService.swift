@@ -215,83 +215,173 @@ public class MixingService: ObservableObject {
 
     // MARK: - Mix Before Unshield
 
-    /// Mix a single payment before unshielding (1-5 random hops)
-    /// Used automatically when unshielding to add privacy
-    /// - Parameter payment: The payment to mix before unshield
+    /// Mix a single payment before unshielding using split/hop/recombine for proper privacy
+    /// 1. Split into 2-4 random parts with varying amounts
+    /// 2. Each split hops 1-3 times independently
+    /// 3. Recombine all parts into a single final address
+    /// - Parameters:
+    ///   - payment: The payment to mix before unshield
+    ///   - parentActivityId: Optional parent activity ID for activity grouping
     /// - Returns: The final payment after mixing (to use for unshield)
     public func mixBeforeUnshield(payment: PendingPayment, parentActivityId: UUID? = nil) async throws -> PendingPayment {
-        print("[MIX] ======== mixBeforeUnshield starting ========")
+        print("[MIX] ======== mixBeforeUnshield starting (split/hop/recombine) ========")
         print("[MIX] Payment ID: \(payment.id)")
         print("[MIX] Initial stealth address: \(payment.stealthAddress)")
         print("[MIX] Initial amount: \(payment.amount) lamports")
-        print("[MIX] Initial ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
-        print("[MIX] Is hybrid: \(payment.isHybrid)")
         print("[MIX] Parent activity ID: \(parentActivityId?.uuidString ?? "none")")
 
+        // Minimum amount needed for proper mixing:
+        // At least 2 splits with min amount + fees for split, hops, and recombine
+        let minForProperMix: UInt64 = 10_000_000  // 0.01 SOL minimum for proper mixing
+
+        // If amount is too small for proper mixing, fall back to simple hops
+        if payment.amount < minForProperMix {
+            print("[MIX] Amount too small for split mixing, using simple hops")
+            return try await simpleHopMix(payment: payment, parentActivityId: parentActivityId)
+        }
+
+        // Phase 1: SPLIT into 2-4 random parts
+        print("[MIX] ======== Phase 1: SPLIT ========")
+        statusMessage = "Splitting payment..."
+
+        let numParts = Int.random(in: 2...4)
+        print("[MIX] Splitting into \(numParts) parts")
+
+        var splitPayments: [PendingPayment]
+        do {
+            splitPayments = try await walletManager.splitPayment(
+                payment: payment,
+                parts: numParts,
+                parentActivityId: parentActivityId
+            )
+            print("[MIX] Split complete: \(splitPayments.count) parts created")
+            for (idx, p) in splitPayments.enumerated() {
+                print("[MIX]   Part \(idx + 1): \(p.amount) lamports at \(p.stealthAddress.prefix(12))...")
+            }
+        } catch {
+            print("[MIX] Split failed: \(error), falling back to simple hops")
+            return try await simpleHopMix(payment: payment, parentActivityId: parentActivityId)
+        }
+
+        // Brief pause after split
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+        // Phase 2: HOP each split independently (1-3 hops each)
+        print("[MIX] ======== Phase 2: HOP each split ========")
+        statusMessage = "Hopping splits..."
+
+        var hoppedPayments: [PendingPayment] = []
+
+        for (idx, splitPayment) in splitPayments.enumerated() {
+            print("[MIX] Processing split \(idx + 1) of \(splitPayments.count)")
+
+            let hopsForThisSplit = Int.random(in: 1...3)
+            var currentPayment = splitPayment
+
+            for hopIdx in 0..<hopsForThisSplit {
+                print("[MIX]   Hop \(hopIdx + 1) of \(hopsForThisSplit) for split \(idx + 1)")
+                statusMessage = "Hopping split \(idx + 1)/\(splitPayments.count), hop \(hopIdx + 1)/\(hopsForThisSplit)..."
+
+                // Brief delay between hops
+                if hopIdx > 0 {
+                    let delay = Int.random(in: 1...3)
+                    try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+                }
+
+                do {
+                    let result = try await walletManager.hop(payment: currentPayment, parentActivityId: parentActivityId)
+
+                    // Wait for state propagation
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+                    // Find the new payment
+                    guard let newPayment = walletManager.pendingPayments.first(where: {
+                        $0.stealthAddress == result.destinationStealthAddress
+                    }) else {
+                        print("[MIX]   WARNING: Could not find hopped payment, using current")
+                        break
+                    }
+
+                    currentPayment = newPayment
+                    print("[MIX]   Hop complete: now at \(currentPayment.stealthAddress.prefix(12))...")
+                } catch {
+                    print("[MIX]   Hop \(hopIdx + 1) failed: \(error), stopping hops for this split")
+                    break
+                }
+            }
+
+            hoppedPayments.append(currentPayment)
+            print("[MIX] Split \(idx + 1) finished with \(currentPayment.hopCount) total hops")
+
+            // Brief pause between processing splits
+            if idx < splitPayments.count - 1 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+
+        print("[MIX] All splits hopped. Total hopped payments: \(hoppedPayments.count)")
+
+        // Phase 3: RECOMBINE all splits into a single address
+        print("[MIX] ======== Phase 3: RECOMBINE ========")
+        statusMessage = "Recombining splits..."
+
+        let finalPayment: PendingPayment
+        do {
+            finalPayment = try await walletManager.recombinePayments(
+                hoppedPayments,
+                parentActivityId: parentActivityId
+            )
+            print("[MIX] Recombine complete!")
+            print("[MIX] Final address: \(finalPayment.stealthAddress)")
+            print("[MIX] Final amount: \(finalPayment.amount) lamports")
+        } catch {
+            print("[MIX] Recombine failed: \(error)")
+            // If recombine fails, return the first hopped payment (partial success)
+            if let firstHopped = hoppedPayments.first {
+                print("[MIX] Returning first hopped payment as fallback")
+                return firstHopped
+            }
+            throw error
+        }
+
+        print("[MIX] ======== mixBeforeUnshield complete (split/hop/recombine) ========")
+        print("[MIX] Original amount: \(payment.amount) lamports")
+        print("[MIX] Final amount: \(finalPayment.amount) lamports")
+        print("[MIX] Fee overhead: \(payment.amount - finalPayment.amount) lamports")
+
+        return finalPayment
+    }
+
+    /// Simple hop-based mixing for small amounts (fallback when split isn't viable)
+    private func simpleHopMix(payment: PendingPayment, parentActivityId: UUID? = nil) async throws -> PendingPayment {
+        print("[MIX] Using simple hop mixing")
+
         guard payment.amount > minBalanceForHop else {
-            print("[MIX] ERROR: Insufficient balance (\(payment.amount) <= \(minBalanceForHop))")
+            print("[MIX] ERROR: Insufficient balance for any mixing")
             throw MixingError.insufficientBalance
         }
 
-        // 1-5 random hops before unshield for privacy
-        let hops = Int.random(in: 1...5)
+        let hops = Int.random(in: 1...3)
         var currentPayment = payment
 
-        print("[MIX] Will perform \(hops) hop(s)")
-
         for hopIndex in 0..<hops {
-            print("[MIX] -------- Hop \(hopIndex + 1) of \(hops) --------")
-            print("[MIX] Current payment ID: \(currentPayment.id)")
-            print("[MIX] Current stealth address: \(currentPayment.stealthAddress)")
-            print("[MIX] Current ephemeral key: \(currentPayment.ephemeralPublicKey.base58EncodedString)")
-
-            // Brief delay between hops (2-5 seconds)
             if hopIndex > 0 {
-                let delaySeconds = Int.random(in: 2...5)
-                print("[MIX] Waiting \(delaySeconds) seconds before hop...")
-                try? await Task.sleep(nanoseconds: UInt64(delaySeconds) * 1_000_000_000)
+                let delay = Int.random(in: 2...4)
+                try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
             }
 
             let result = try await walletManager.hop(payment: currentPayment, parentActivityId: parentActivityId)
-            print("[MIX] Hop completed successfully!")
-            print("[MIX] Result destination address: \(result.destinationStealthAddress)")
-            print("[MIX] Result ephemeral key: \(result.ephemeralPublicKey.base58EncodedString)")
-            print("[MIX] Result amount: \(result.amount) lamports")
-            print("[MIX] Transaction signature: \(result.signature)")
-
-            // Wait for state to update (increased from 0.5s to 2s)
-            print("[MIX] Waiting 2 seconds for state to propagate...")
-            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
-
-            // Find the new payment
-            print("[MIX] Searching for new payment in pending list...")
-            print("[MIX] Looking for address: \(result.destinationStealthAddress)")
-            print("[MIX] Current pending payments:")
-            for (idx, p) in walletManager.pendingPayments.enumerated() {
-                print("[MIX]   [\(idx)] \(p.id): \(p.stealthAddress) (hop: \(p.hopCount))")
-            }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
 
             guard let newPayment = walletManager.pendingPayments.first(where: {
                 $0.stealthAddress == result.destinationStealthAddress
             }) else {
-                print("[MIX] ERROR: Could not find new payment with address \(result.destinationStealthAddress)")
                 throw MixingError.paymentNotFound
             }
-
-            print("[MIX] Found new payment: \(newPayment.id)")
-            print("[MIX] New payment address: \(newPayment.stealthAddress)")
-            print("[MIX] New payment ephemeral: \(newPayment.ephemeralPublicKey.base58EncodedString)")
-            print("[MIX] Addresses match: \(newPayment.stealthAddress == result.destinationStealthAddress)")
-            print("[MIX] Ephemeral keys match: \(newPayment.ephemeralPublicKey == result.ephemeralPublicKey)")
 
             currentPayment = newPayment
         }
 
-        print("[MIX] ======== mixBeforeUnshield complete ========")
-        print("[MIX] Final payment ID: \(currentPayment.id)")
-        print("[MIX] Final stealth address: \(currentPayment.stealthAddress)")
-        print("[MIX] Final ephemeral key: \(currentPayment.ephemeralPublicKey.base58EncodedString)")
-        print("[MIX] Final hop count: \(currentPayment.hopCount)")
         return currentPayment
     }
 
