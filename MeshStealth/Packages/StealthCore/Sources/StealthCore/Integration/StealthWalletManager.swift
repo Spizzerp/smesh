@@ -367,8 +367,8 @@ public class StealthWalletManager: ObservableObject {
         if let existing = try? keychainService.loadKeyPair() {
             keyPair = existing
         } else {
-            // Generate new stealth keypair
-            let newKeyPair = try StealthKeyPair.generate()
+            // Generate new stealth keypair with post-quantum (MLKEM768) support
+            let newKeyPair = try StealthKeyPair.generate(withPostQuantum: true)
             try keychainService.storeKeyPair(newKeyPair)
             keyPair = newKeyPair
         }
@@ -860,6 +860,31 @@ public class StealthWalletManager: ObservableObject {
         if let err = error {
             activityItems[index].errorMessage = err
         }
+
+        saveActivityItems()
+    }
+
+    /// Update an activity item's amount (e.g., after calculating actual fees)
+    public func updateActivityAmount(id: UUID, amount: UInt64) {
+        guard let index = activityItems.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        // ActivityItem.amount is let, so we need to replace the whole item
+        let current = activityItems[index]
+        activityItems[index] = ActivityItem(
+            id: current.id,
+            type: current.type,
+            amount: amount,
+            timestamp: current.timestamp,
+            status: current.status,
+            stealthAddress: current.stealthAddress,
+            transactionSignature: current.transactionSignature,
+            hopCount: current.hopCount,
+            errorMessage: current.errorMessage,
+            peerName: current.peerName,
+            parentActivityId: current.parentActivityId
+        )
 
         saveActivityItems()
     }
@@ -1363,7 +1388,8 @@ public class StealthWalletManager: ObservableObject {
 
         // Execute splits sequentially (could optimize to parallel later)
         for (index, amount) in splitAmounts.enumerated() {
-            print("[SPLIT] Creating split \(index + 1) of \(numParts): \(amount) lamports")
+            let isLastSplit = (index == splitAmounts.count - 1)
+            print("[SPLIT] Creating split \(index + 1) of \(numParts): \(amount) lamports\(isLastSplit ? " (closing account)" : "")")
 
             // Generate new stealth address for this split (use hybrid meta-address)
             let metaAddress = keyPair.hybridMetaAddressString
@@ -1372,11 +1398,13 @@ public class StealthWalletManager: ObservableObject {
             )
 
             // Send funds to the new stealth address
+            // On last split, send ALL remaining balance (nil) to close the source account
+            // This avoids Solana rent issues where leftover lamports are below rent-exempt threshold
             let signature = try await shieldService!.sendFromStealth(
                 fromStealthAddress: payment.stealthAddress,
                 spendingKey: spendingKey,
                 toAddress: stealthResult.stealthAddress,
-                lamports: amount
+                lamports: isLastSplit ? nil : amount
             )
 
             print("[SPLIT] Split \(index + 1) transaction: \(signature)")
@@ -1502,29 +1530,31 @@ public class StealthWalletManager: ObservableObject {
 
         // Send each payment to the combined address
         for (index, payment) in payments.enumerated() {
-            print("[RECOMBINE] Processing payment \(index + 1) of \(payments.count)")
+            print("[RECOMBINE] Processing payment \(index + 1) of \(payments.count) (closing account)")
             print("[RECOMBINE]   Source: \(payment.stealthAddress)")
-            print("[RECOMBINE]   Amount: \(payment.amount) lamports")
-
-            // Account for transaction fee
-            let sendAmount = payment.amount > feePerTransaction
-                ? payment.amount - feePerTransaction
-                : payment.amount
+            print("[RECOMBINE]   Expected amount: \(payment.amount) lamports")
 
             // Derive spending key for this payment
             let spendingKey = try deriveSpendingKey(for: payment)
 
-            // Send to the combined address
+            // Get actual balance before sending (may differ from recorded amount)
+            let actualBalance = try await faucet.getBalance(address: payment.stealthAddress)
+            let estimatedSendAmount = actualBalance > feePerTransaction
+                ? actualBalance - feePerTransaction
+                : 0
+
+            // Send ALL to the combined address (nil closes the source account)
+            // This avoids Solana rent issues and ensures exact balance transfer
             let signature = try await shieldService!.sendFromStealth(
                 fromStealthAddress: payment.stealthAddress,
                 spendingKey: spendingKey,
                 toAddress: finalResult.stealthAddress,
-                lamports: sendAmount
+                lamports: nil  // Send ALL, closing the account
             )
 
             print("[RECOMBINE] Transaction \(index + 1): \(signature)")
             signatures.append(signature)
-            totalAmount += sendAmount
+            totalAmount += estimatedSendAmount
 
             // Remove this payment from pending
             pendingPayments.removeAll { $0.id == payment.id }

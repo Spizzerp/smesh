@@ -119,7 +119,12 @@ struct WalletView: View {
     }
 
     private func performShield() {
-        guard let amount = Double(shieldAmount), amount > 0 else { return }
+        print("[UI] performShield called with shieldAmount: '\(shieldAmount)'")
+        guard let amount = Double(shieldAmount), amount > 0 else {
+            print("[UI] performShield: invalid amount, returning early")
+            return
+        }
+        print("[UI] performShield: starting shield of \(amount) SOL")
 
         Task {
             do {

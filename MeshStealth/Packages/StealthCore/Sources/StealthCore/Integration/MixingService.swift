@@ -413,6 +413,22 @@ public class MixingService: ObservableObject {
             print("[UNSHIELD-MIX]   [\(idx)] \(p.id): \(p.stealthAddress) - \(p.amount) lamports")
         }
 
+        guard !payments.isEmpty else {
+            print("[UNSHIELD-MIX] No eligible payments")
+            return []
+        }
+
+        // Calculate total amount for the parent activity
+        let totalAmount = payments.reduce(0) { $0 + $1.amount }
+
+        // Create ONE parent unshield activity for the entire operation
+        let parentActivityId = walletManager.recordUnshieldActivity(
+            amount: totalAmount,
+            stealthAddress: payments.first?.stealthAddress ?? "",
+            signature: "pending"
+        )
+        print("[UNSHIELD-MIX] Created parent activity: \(parentActivityId)")
+
         var results: [UnshieldResult] = []
         let totalPayments = payments.count
 
@@ -424,38 +440,37 @@ public class MixingService: ObservableObject {
             mixProgress = Double(index) / Double(totalPayments)
             statusMessage = "Mixing & unshielding payment \(index + 1) of \(totalPayments)..."
 
-            // Create unshield activity BEFORE mixing so hops can link to it
-            let unshieldActivityId = walletManager.recordUnshieldActivity(
-                amount: payment.amount,
-                stealthAddress: payment.stealthAddress,
-                signature: "pending"  // Will be updated after unshield completes
-            )
-
             do {
-                // Mix first (1-5 quick hops) - pass the unshield activity ID
+                // Mix first (1-5 quick hops) - pass the parent activity ID so hops link to it
                 print("[UNSHIELD-MIX] Starting mix phase...")
-                let mixedPayment = try await mixBeforeUnshield(payment: payment, parentActivityId: unshieldActivityId)
+                let mixedPayment = try await mixBeforeUnshield(payment: payment, parentActivityId: parentActivityId)
 
                 print("[UNSHIELD-MIX] Mix complete. Now unshielding...")
                 print("[UNSHIELD-MIX] Mixed payment ID: \(mixedPayment.id)")
                 print("[UNSHIELD-MIX] Mixed payment address: \(mixedPayment.stealthAddress)")
                 print("[UNSHIELD-MIX] Mixed payment ephemeral: \(mixedPayment.ephemeralPublicKey.base58EncodedString)")
 
-                // Then unshield to main wallet (don't record activity again, just update)
+                // Then unshield to main wallet (skip recording, we have the parent)
                 let result = try await walletManager.unshield(payment: mixedPayment, skipActivityRecord: true)
                 print("[UNSHIELD-MIX] Unshield successful! Signature: \(result.signature)")
-
-                // Update the activity with the real signature
-                walletManager.updateActivityStatus(id: unshieldActivityId, status: .completed, signature: result.signature)
 
                 results.append(result)
             } catch {
                 // Log error but continue with other payments
                 print("[UNSHIELD-MIX] ERROR: Failed to mix+unshield payment \(payment.id): \(error)")
                 print("[UNSHIELD-MIX] Error details: \(error.localizedDescription)")
-                // Mark activity as failed
-                walletManager.updateActivityStatus(id: unshieldActivityId, status: .failed, error: error.localizedDescription)
             }
+        }
+
+        // Update the parent activity with final status
+        let finalAmount = results.reduce(0) { $0 + $1.amount }
+        let finalSignature = results.last?.signature ?? "failed"
+        if results.isEmpty {
+            walletManager.updateActivityStatus(id: parentActivityId, status: .failed, error: "All unshields failed")
+        } else {
+            walletManager.updateActivityStatus(id: parentActivityId, status: .completed, signature: finalSignature)
+            // Update the amount to reflect actual unshielded amount
+            walletManager.updateActivityAmount(id: parentActivityId, amount: finalAmount)
         }
 
         print("[UNSHIELD-MIX] ======== unshieldAllWithMix complete ========")

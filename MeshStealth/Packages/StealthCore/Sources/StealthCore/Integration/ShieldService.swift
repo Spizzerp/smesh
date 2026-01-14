@@ -486,24 +486,36 @@ public actor ShieldService {
     ///   - fromStealthAddress: Source stealth address
     ///   - spendingKey: The spending key for the source stealth address
     ///   - toAddress: Destination address (can be stealth or regular)
-    ///   - lamports: Amount to send
+    ///   - lamports: Amount to send, or nil to send ALL remaining balance (closes account)
     /// - Returns: Transaction signature
     public func sendFromStealth(
         fromStealthAddress: String,
         spendingKey: Data,
         toAddress: String,
-        lamports: UInt64
+        lamports: UInt64?
     ) async throws -> String {
-        print("[SEND-STEALTH] Sending \(lamports) lamports")
-        print("[SEND-STEALTH] From: \(fromStealthAddress)")
-        print("[SEND-STEALTH] To: \(toAddress)")
-
         // 1. Check source balance
         let sourceBalance = try await rpcClient.getBalance(address: fromStealthAddress)
 
-        guard sourceBalance >= lamports + estimatedFee else {
-            throw ShieldError.insufficientBalance(available: sourceBalance, required: lamports + estimatedFee)
+        // Determine actual amount to send
+        let transferAmount: UInt64
+        if let specifiedAmount = lamports {
+            // Specific amount requested
+            guard sourceBalance >= specifiedAmount + estimatedFee else {
+                throw ShieldError.insufficientBalance(available: sourceBalance, required: specifiedAmount + estimatedFee)
+            }
+            transferAmount = specifiedAmount
+        } else {
+            // Send ALL remaining balance (close account)
+            guard sourceBalance > estimatedFee else {
+                throw ShieldError.insufficientBalance(available: sourceBalance, required: estimatedFee + 1)
+            }
+            transferAmount = sourceBalance - estimatedFee
         }
+
+        print("[SEND-STEALTH] Sending \(transferAmount) lamports\(lamports == nil ? " (ALL - closing account)" : "")")
+        print("[SEND-STEALTH] From: \(fromStealthAddress)")
+        print("[SEND-STEALTH] To: \(toAddress)")
 
         // 2. Create wallet from spending key
         let sourceWallet: SolanaWallet
@@ -534,7 +546,7 @@ public actor ShieldService {
         let message = try SolanaTransaction.buildTransfer(
             from: fromPubkey,
             to: toPubkey,
-            lamports: lamports,
+            lamports: transferAmount,
             recentBlockhash: blockhash
         )
 

@@ -208,8 +208,8 @@ struct ActivityCard: View {
                     .padding(.horizontal)
 
                 VStack(spacing: 0) {
-                    ForEach(childActivities) { child in
-                        ChildActivityRow(activity: child)
+                    ForEach(Array(childActivities.enumerated()), id: \.element.id) { index, child in
+                        ChildActivityRow(activity: child, index: index + 1)
                         if child.id != childActivities.last?.id {
                             Divider()
                                 .padding(.leading, 52)
@@ -294,6 +294,7 @@ struct ActivityCard: View {
 
 struct ChildActivityRow: View {
     let activity: ActivityItem
+    let index: Int  // Sequential index for display
 
     var body: some View {
         HStack(spacing: 12) {
@@ -304,7 +305,7 @@ struct ChildActivityRow: View {
                 .frame(width: 40, height: 24)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Hop \(activity.hopCount ?? 0)")
+                Text("Mix \(index)")
                     .font(.caption)
                     .fontWeight(.medium)
 
