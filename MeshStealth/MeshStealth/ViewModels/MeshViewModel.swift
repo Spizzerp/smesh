@@ -58,13 +58,15 @@ class MeshViewModel: ObservableObject {
 
     private let meshService: BLEMeshService
     private let walletManager: StealthWalletManager
+    private let networkMonitor: NetworkMonitor
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Initialization
 
-    init(meshService: BLEMeshService, walletManager: StealthWalletManager) {
+    init(meshService: BLEMeshService, walletManager: StealthWalletManager, networkMonitor: NetworkMonitor) {
         self.meshService = meshService
         self.walletManager = walletManager
+        self.networkMonitor = networkMonitor
         setupBindings()
     }
 
@@ -73,6 +75,11 @@ class MeshViewModel: ObservableObject {
         meshService.$isActive
             .receive(on: DispatchQueue.main)
             .assign(to: &$isActive)
+
+        // Bind network online state from NetworkMonitor
+        networkMonitor.$isConnected
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isOnline)
 
         // Bind ALL peers (discovered + connected)
         Publishers.CombineLatest(

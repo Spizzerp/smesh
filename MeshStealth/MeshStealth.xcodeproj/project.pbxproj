@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		84656F7CE8988B3E3F5623F0 /* NeuromorphicInputs.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8F146F15C8AAFFF8FB3AC3B /* NeuromorphicInputs.swift */; };
+		84BA6574C79BEA0A42F83F1D /* WalletBadges.swift in Sources */ = {isa = PBXBuildFile; fileRef = 798A1808C78A8F6E25F22FB5 /* WalletBadges.swift */; };
+		9C34C5CC29ECDB642A356D51 /* NeuromorphicStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A687BFCC3A609325E4421CC9 /* NeuromorphicStyle.swift */; };
+		9E829E0C65B6FC64E3675946 /* NeuromorphicWalletContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2133D3E2C13036A4C97FADEA /* NeuromorphicWalletContainer.swift */; };
 		APP001 /* MeshStealthApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC001 /* MeshStealthApp.swift */; };
 		APP002 /* WalletViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC002 /* WalletViewModel.swift */; };
 		APP003 /* MeshViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC003 /* MeshViewModel.swift */; };
@@ -18,10 +22,16 @@
 		APP009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = RES001 /* Assets.xcassets */; };
 		APP010 /* WalletBackupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC009 /* WalletBackupView.swift */; };
 		APP011 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC010 /* ActivityView.swift */; };
+		DBF9C4F3B63642FDC66D5D1C /* NeuromorphicButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A3E2C92377387BFEAE8F820 /* NeuromorphicButtons.swift */; };
 		PKG001 /* StealthCore in Frameworks */ = {isa = PBXBuildFile; productRef = PKG002 /* StealthCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		2133D3E2C13036A4C97FADEA /* NeuromorphicWalletContainer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NeuromorphicWalletContainer.swift; sourceTree = "<group>"; };
+		5A3E2C92377387BFEAE8F820 /* NeuromorphicButtons.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NeuromorphicButtons.swift; sourceTree = "<group>"; };
+		798A1808C78A8F6E25F22FB5 /* WalletBadges.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WalletBadges.swift; sourceTree = "<group>"; };
+		A687BFCC3A609325E4421CC9 /* NeuromorphicStyle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NeuromorphicStyle.swift; sourceTree = "<group>"; };
+		C8F146F15C8AAFFF8FB3AC3B /* NeuromorphicInputs.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NeuromorphicInputs.swift; sourceTree = "<group>"; };
 		INF001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		PRD001 /* MeshStealth.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MeshStealth.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		RES001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -49,6 +59,19 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		0DF132E8BD6D9CFBD8A2CC7E /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				A687BFCC3A609325E4421CC9 /* NeuromorphicStyle.swift */,
+				5A3E2C92377387BFEAE8F820 /* NeuromorphicButtons.swift */,
+				C8F146F15C8AAFFF8FB3AC3B /* NeuromorphicInputs.swift */,
+				2133D3E2C13036A4C97FADEA /* NeuromorphicWalletContainer.swift */,
+				798A1808C78A8F6E25F22FB5 /* WalletBadges.swift */,
+			);
+			name = Components;
+			path = Components;
+			sourceTree = "<group>";
+		};
 		GRP001 = {
 			isa = PBXGroup;
 			children = (
@@ -96,6 +119,7 @@
 				SRC008 /* SettingsView.swift */,
 				SRC009 /* WalletBackupView.swift */,
 				SRC010 /* ActivityView.swift */,
+				0DF132E8BD6D9CFBD8A2CC7E /* Components */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -172,7 +196,7 @@
 			);
 			mainGroup = GRP001;
 			packageReferences = (
-				PKG003 /* XCLocalSwiftPackageReference "Packages/StealthCore" */,
+				PKG003 /* XCLocalSwiftPackageReference "StealthCore" */,
 			);
 			productRefGroup = GRP007 /* Products */;
 			projectDirPath = "";
@@ -209,6 +233,11 @@
 				APP008 /* SettingsView.swift in Sources */,
 				APP010 /* WalletBackupView.swift in Sources */,
 				APP011 /* ActivityView.swift in Sources */,
+				9C34C5CC29ECDB642A356D51 /* NeuromorphicStyle.swift in Sources */,
+				DBF9C4F3B63642FDC66D5D1C /* NeuromorphicButtons.swift in Sources */,
+				84656F7CE8988B3E3F5623F0 /* NeuromorphicInputs.swift in Sources */,
+				9E829E0C65B6FC64E3675946 /* NeuromorphicWalletContainer.swift in Sources */,
+				84BA6574C79BEA0A42F83F1D /* WalletBadges.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -424,7 +453,7 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		PKG003 /* XCLocalSwiftPackageReference "Packages/StealthCore" */ = {
+		PKG003 /* XCLocalSwiftPackageReference "StealthCore" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/StealthCore;
 		};

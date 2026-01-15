@@ -33,7 +33,8 @@ class AppState: ObservableObject {
         self.walletViewModel = WalletViewModel(walletManager: meshNetworkManager.walletManager)
         self.meshViewModel = MeshViewModel(
             meshService: meshNetworkManager.meshService,
-            walletManager: meshNetworkManager.walletManager
+            walletManager: meshNetworkManager.walletManager,
+            networkMonitor: meshNetworkManager.networkMonitor
         )
 
         // Start initialization
