@@ -181,47 +181,80 @@ public class MeshNetworkManager: ObservableObject {
         tokenMint: String? = nil,
         memo: String? = nil
     ) async throws {
-        print("[MESH-SEND] Starting mesh payment of \(amount) lamports (online: \(isOnline))")
+        print("[MESH-SEND] ========== STARTING MESH PAYMENT ==========")
+        print("[MESH-SEND] Amount: \(amount) lamports (\(Double(amount) / 1_000_000_000) SOL)")
+        print("[MESH-SEND] Online: \(isOnline)")
+        print("[MESH-SEND] Meta-address length: \(recipientMetaAddress.count) chars")
+        print("[MESH-SEND] Meta-address preview: \(recipientMetaAddress.prefix(20))...\(recipientMetaAddress.suffix(10))")
 
         // Verify we have a wallet to send from
         guard walletManager.mainWallet != nil else {
+            print("[MESH-SEND] ERROR: Wallet not initialized!")
             throw MeshNetworkError.walletNotInitialized
         }
+        print("[MESH-SEND] ✓ Wallet exists")
 
         // Parse meta-address
-        let (spendingPubKey, viewingPubKey, mlkemPubKey) = try parseMetaAddress(recipientMetaAddress)
+        print("[MESH-SEND] Parsing meta-address...")
+        let (spendingPubKey, viewingPubKey, mlkemPubKey): (Data, Data, Data?)
+        do {
+            (spendingPubKey, viewingPubKey, mlkemPubKey) = try parseMetaAddress(recipientMetaAddress)
+            print("[MESH-SEND] ✓ Meta-address parsed successfully")
+            print("[MESH-SEND]   - Spending pubkey: \(spendingPubKey.count) bytes")
+            print("[MESH-SEND]   - Viewing pubkey: \(viewingPubKey.count) bytes")
+            print("[MESH-SEND]   - MLKEM pubkey: \(mlkemPubKey?.count ?? 0) bytes (hybrid: \(mlkemPubKey != nil))")
+        } catch {
+            print("[MESH-SEND] ERROR: Failed to parse meta-address: \(error)")
+            throw error
+        }
 
         // Generate stealth address
+        print("[MESH-SEND] Generating stealth address...")
         let stealthResult: StealthAddressResult
 
-        if let mlkemKey = mlkemPubKey {
-            // Hybrid mode
-            stealthResult = try StealthAddressGenerator.generateHybridStealthAddress(
-                spendingPublicKey: spendingPubKey,
-                viewingPublicKey: viewingPubKey,
-                mlkemPublicKey: mlkemKey
-            )
-            print("[MESH-SEND] Generated hybrid stealth address: \(stealthResult.stealthAddress)")
-        } else {
-            // Classical mode
-            stealthResult = try StealthAddressGenerator.generateStealthAddress(
-                spendingPublicKey: spendingPubKey,
-                viewingPublicKey: viewingPubKey
-            )
-            print("[MESH-SEND] Generated classical stealth address: \(stealthResult.stealthAddress)")
+        do {
+            if let mlkemKey = mlkemPubKey {
+                // Hybrid mode
+                print("[MESH-SEND] Using HYBRID mode (X25519 + MLKEM768)")
+                stealthResult = try StealthAddressGenerator.generateHybridStealthAddress(
+                    spendingPublicKey: spendingPubKey,
+                    viewingPublicKey: viewingPubKey,
+                    mlkemPublicKey: mlkemKey
+                )
+                print("[MESH-SEND] ✓ Generated hybrid stealth address: \(stealthResult.stealthAddress)")
+            } else {
+                // Classical mode
+                print("[MESH-SEND] Using CLASSICAL mode (X25519 only)")
+                stealthResult = try StealthAddressGenerator.generateStealthAddress(
+                    spendingPublicKey: spendingPubKey,
+                    viewingPublicKey: viewingPubKey
+                )
+                print("[MESH-SEND] ✓ Generated classical stealth address: \(stealthResult.stealthAddress)")
+            }
+        } catch {
+            print("[MESH-SEND] ERROR: Failed to generate stealth address: \(error)")
+            throw error
         }
 
         // Step 1: Create mesh payload and broadcast immediately (works offline)
+        print("[MESH-SEND] Creating mesh payload...")
         let payload = MeshStealthPayload(
             from: stealthResult,
             amount: amount,
             tokenMint: tokenMint,
             memo: memo
         )
+        print("[MESH-SEND] ✓ Payload created (estimated size: \(payload.estimatedSize) bytes)")
 
         // Broadcast via mesh first (this works offline via BLE)
-        try await meshService.sendPayment(payload)
-        print("[MESH-SEND] Mesh payload broadcast complete")
+        print("[MESH-SEND] Broadcasting via BLE mesh...")
+        do {
+            try await meshService.sendPayment(payload)
+            print("[MESH-SEND] ✓ Mesh payload broadcast complete")
+        } catch {
+            print("[MESH-SEND] ERROR: BLE broadcast failed: \(error)")
+            throw error
+        }
 
         // Step 2: Create outgoing payment intent
         let intent = OutgoingPaymentIntent(
@@ -247,7 +280,13 @@ public class MeshNetworkManager: ObservableObject {
 
     /// Execute a queued outgoing payment on-chain
     private func executeOutgoingPayment(_ intent: OutgoingPaymentIntent) async throws {
+        print("[MESH-SEND] ========== EXECUTING ON-CHAIN PAYMENT ==========")
+        print("[MESH-SEND] Intent ID: \(intent.id)")
+        print("[MESH-SEND] Amount: \(intent.amount) lamports")
+        print("[MESH-SEND] To stealth address: \(intent.stealthAddress)")
+
         guard let mainWallet = walletManager.mainWallet else {
+            print("[MESH-SEND] ERROR: Main wallet not found!")
             throw MeshNetworkError.walletNotInitialized
         }
 
@@ -257,41 +296,58 @@ public class MeshNetworkManager: ObservableObject {
         do {
             // Check balance
             let mainAddress = await mainWallet.address
+            print("[MESH-SEND] From address: \(mainAddress)")
+
+            print("[MESH-SEND] Fetching balance...")
             let balance = try await faucet.getBalance(address: mainAddress)
             let requiredAmount = intent.amount + estimatedFee
+            print("[MESH-SEND] Balance: \(balance) lamports (\(Double(balance) / 1_000_000_000) SOL)")
+            print("[MESH-SEND] Required: \(requiredAmount) lamports (\(Double(requiredAmount) / 1_000_000_000) SOL)")
 
             guard balance >= requiredAmount else {
+                print("[MESH-SEND] ERROR: Insufficient balance!")
                 throw MeshNetworkError.insufficientBalance(available: balance, required: requiredAmount)
             }
+            print("[MESH-SEND] ✓ Balance sufficient")
 
             // Build and send transaction
+            print("[MESH-SEND] Fetching recent blockhash...")
             let blockhash = try await faucet.getRecentBlockhash()
+            print("[MESH-SEND] ✓ Blockhash: \(blockhash.prefix(20))...")
+
             let fromPubkey = await mainWallet.publicKeyData
             guard let toPubkey = Data(base58Decoding: intent.stealthAddress) else {
+                print("[MESH-SEND] ERROR: Invalid stealth address encoding!")
                 throw MeshNetworkError.invalidStealthAddress
             }
 
+            print("[MESH-SEND] Building transaction...")
             let message = try SolanaTransaction.buildTransfer(
                 from: fromPubkey,
                 to: toPubkey,
                 lamports: intent.amount,
                 recentBlockhash: blockhash
             )
+            print("[MESH-SEND] ✓ Transaction message built")
 
             let messageBytes = message.serialize()
+            print("[MESH-SEND] Signing transaction...")
             let signature = try await mainWallet.sign(messageBytes)
+            print("[MESH-SEND] ✓ Transaction signed")
 
             let signedTx = try SolanaTransaction.buildSignedTransaction(
                 message: message,
                 signature: signature
             )
 
+            print("[MESH-SEND] Submitting transaction to network...")
             let txSignature = try await faucet.sendTransaction(signedTx)
-            print("[MESH-SEND] Transaction submitted: \(txSignature)")
+            print("[MESH-SEND] ✓ Transaction submitted: \(txSignature)")
 
             // Wait for confirmation
+            print("[MESH-SEND] Waiting for confirmation (timeout: 30s)...")
             try await faucet.waitForConfirmation(signature: txSignature, timeout: 30)
-            print("[MESH-SEND] Transaction confirmed!")
+            print("[MESH-SEND] ✓ Transaction confirmed!")
 
             // Update intent status
             walletManager.updateOutgoingIntent(id: intent.id, status: .confirmed, signature: txSignature)
@@ -300,10 +356,15 @@ public class MeshNetworkManager: ObservableObject {
             walletManager.updateActivityStatus(id: intent.id, status: .completed, signature: txSignature)
 
             // Refresh balance
+            print("[MESH-SEND] Refreshing balance...")
             await walletManager.refreshMainWalletBalance()
+            print("[MESH-SEND] ========== PAYMENT COMPLETE ==========")
 
         } catch {
-            print("[MESH-SEND] Transaction failed: \(error)")
+            print("[MESH-SEND] ========== PAYMENT FAILED ==========")
+            print("[MESH-SEND] Error type: \(type(of: error))")
+            print("[MESH-SEND] Error: \(error)")
+            print("[MESH-SEND] Localized: \(error.localizedDescription)")
             walletManager.updateOutgoingIntent(id: intent.id, status: .failed, error: error.localizedDescription)
             throw error
         }
@@ -412,16 +473,34 @@ public class MeshNetworkManager: ObservableObject {
     // MARK: - Helpers
 
     private func parseMetaAddress(_ metaAddress: String) throws -> (Data, Data, Data?) {
-        // Try hybrid first
-        if let parsed = try? StealthKeyPair.parseHybridMetaAddress(metaAddress) {
+        print("[MESH-SEND] parseMetaAddress: input length = \(metaAddress.count) chars")
+
+        // Check if base58 is valid first
+        guard let decodedData = metaAddress.base58DecodedData else {
+            print("[MESH-SEND] parseMetaAddress: ERROR - Invalid base58 encoding!")
+            throw MeshNetworkError.invalidMetaAddress
+        }
+        print("[MESH-SEND] parseMetaAddress: decoded to \(decodedData.count) bytes")
+
+        // Try hybrid first (64 or 1248 bytes)
+        do {
+            let parsed = try StealthKeyPair.parseHybridMetaAddress(metaAddress)
+            print("[MESH-SEND] parseMetaAddress: ✓ Parsed as hybrid/classical format")
             return (parsed.spendingPubKey, parsed.viewingPubKey, parsed.mlkemPubKey)
+        } catch {
+            print("[MESH-SEND] parseMetaAddress: Hybrid parse failed: \(error)")
         }
 
-        // Try classical
-        if let parsed = try? StealthKeyPair.parseMetaAddress(metaAddress) {
+        // Try classical (exactly 64 bytes)
+        do {
+            let parsed = try StealthKeyPair.parseMetaAddress(metaAddress)
+            print("[MESH-SEND] parseMetaAddress: ✓ Parsed as classical format")
             return (parsed.spendingPubKey, parsed.viewingPubKey, nil)
+        } catch {
+            print("[MESH-SEND] parseMetaAddress: Classical parse failed: \(error)")
         }
 
+        print("[MESH-SEND] parseMetaAddress: ERROR - Neither format matched! Expected 64 or 1248 bytes, got \(decodedData.count)")
         throw MeshNetworkError.invalidMetaAddress
     }
 

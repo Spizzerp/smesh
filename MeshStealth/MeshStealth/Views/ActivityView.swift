@@ -1,23 +1,76 @@
 import SwiftUI
 import StealthCore
 
+// MARK: - Activity Type Filter
+
+enum ActivityTypeFilter: String, CaseIterable {
+    case all = "All"
+    case shieldUnshield = "Shield"
+    case mesh = "Mesh"
+    case wallet = "Wallet"
+
+    var icon: String {
+        switch self {
+        case .all: return "list.bullet"
+        case .shieldUnshield: return "eye.slash.fill"
+        case .mesh: return "antenna.radiowaves.left.and.right"
+        case .wallet: return "wallet.pass.fill"
+        }
+    }
+
+    /// Filter activity items by this filter type
+    func matches(_ activity: ActivityItem) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .shieldUnshield:
+            return activity.type == .shield || activity.type == .unshield
+        case .mesh:
+            return activity.type == .meshSend || activity.type == .meshReceive
+        case .wallet:
+            return activity.type == .airdrop || activity.type == .hop
+        }
+    }
+}
+
 struct ActivityView: View {
     @EnvironmentObject var walletViewModel: WalletViewModel
     @EnvironmentObject var meshViewModel: MeshViewModel
 
     @Namespace private var filterNamespace
     @State private var showPendingOnly = false
+    @State private var selectedTypeFilter: ActivityTypeFilter = .all
     @State private var expandedActivities: Set<UUID> = []
 
     var body: some View {
         NavigationStack {
             Group {
                 if filteredActivities.isEmpty {
-                    EmptyActivityView(showPendingOnly: showPendingOnly)
+                    VStack(spacing: 16) {
+                        // Show filter bar even when empty
+                        ActivityTypeFilterBar(
+                            selectedFilter: $selectedTypeFilter
+                        )
+
+                        Spacer()
+
+                        EmptyActivityView(
+                            showPendingOnly: showPendingOnly,
+                            selectedFilter: selectedTypeFilter
+                        )
+
+                        Spacer()
+                    }
                 } else {
                     ScrollView {
-                        LazyVStack(spacing: 12) {
-                            ForEach(groupedActivities.keys.sorted().reversed(), id: \.self) { dateKey in
+                        VStack(spacing: 16) {
+                            // Type filter bar
+                            ActivityTypeFilterBar(
+                                selectedFilter: $selectedTypeFilter
+                            )
+
+                            LazyVStack(spacing: 12) {
+                            ForEach(sortedDateKeys, id: \.self) { dateKey in
                                 Section {
                                     ForEach(groupedActivities[dateKey] ?? []) { activity in
                                         ActivityCard(
@@ -44,11 +97,12 @@ struct ActivityView: View {
                                         Spacer()
                                     }
                                     .padding(.horizontal, 4)
-                                    .padding(.top, dateKey == groupedActivities.keys.sorted().reversed().first ? 0 : 8)
+                                    .padding(.top, dateKey == sortedDateKeys.first ? 0 : 8)
                                 }
                             }
+                            }
+                            .padding(.horizontal)
                         }
-                        .padding(.horizontal)
                         .padding(.bottom)
                     }
                 }
@@ -62,13 +116,21 @@ struct ActivityView: View {
         }
     }
 
-    /// Activities filtered by pending toggle, excluding child activities (hops with parents)
+    /// Activities filtered by pending toggle and type filter, excluding child activities (hops with parents)
     private var filteredActivities: [ActivityItem] {
-        let baseActivities = walletViewModel.activityItems.filter { !$0.isChildActivity }
-        if showPendingOnly {
-            return baseActivities.filter { $0.needsSync }
+        var activities = walletViewModel.activityItems.filter { !$0.isChildActivity }
+
+        // Apply type filter
+        if selectedTypeFilter != .all {
+            activities = activities.filter { selectedTypeFilter.matches($0) }
         }
-        return baseActivities
+
+        // Apply pending filter
+        if showPendingOnly {
+            activities = activities.filter { $0.needsSync }
+        }
+
+        return activities
     }
 
     /// Get child activities (hops) for a parent activity
@@ -76,9 +138,26 @@ struct ActivityView: View {
         walletViewModel.activityItems.filter { $0.parentActivityId == parentId }
     }
 
+    /// Group activities by date, with activities sorted newest first within each group
     private var groupedActivities: [String: [ActivityItem]] {
-        Dictionary(grouping: filteredActivities) { activity in
+        var groups = Dictionary(grouping: filteredActivities) { activity in
             formatDateGroup(activity.timestamp)
+        }
+        // Sort activities within each group by timestamp (newest first)
+        for (key, items) in groups {
+            groups[key] = items.sorted { $0.timestamp > $1.timestamp }
+        }
+        return groups
+    }
+
+    /// Get sorted date group keys (newest first)
+    private var sortedDateKeys: [String] {
+        let keys = groupedActivities.keys
+        return keys.sorted { key1, key2 in
+            // Get representative date for each group
+            let date1 = groupedActivities[key1]?.first?.timestamp ?? Date.distantPast
+            let date2 = groupedActivities[key2]?.first?.timestamp ?? Date.distantPast
+            return date1 > date2  // Newest first
         }
     }
 
@@ -331,21 +410,56 @@ struct ChildActivityRow: View {
 
 struct EmptyActivityView: View {
     let showPendingOnly: Bool
+    var selectedFilter: ActivityTypeFilter = .all
+
+    private var emptyIcon: String {
+        if showPendingOnly {
+            return "checkmark.circle"
+        }
+        switch selectedFilter {
+        case .all: return "doc.text"
+        case .shieldUnshield: return "eye.slash"
+        case .mesh: return "antenna.radiowaves.left.and.right"
+        case .wallet: return "wallet.pass"
+        }
+    }
+
+    private var emptyTitle: String {
+        if showPendingOnly {
+            return "All Synced!"
+        }
+        switch selectedFilter {
+        case .all: return "No Activity Yet"
+        case .shieldUnshield: return "No Shield Activity"
+        case .mesh: return "No Mesh Transactions"
+        case .wallet: return "No Wallet Activity"
+        }
+    }
+
+    private var emptyMessage: String {
+        if showPendingOnly {
+            return "All transactions are synced"
+        }
+        switch selectedFilter {
+        case .all: return "Your transaction history will appear here"
+        case .shieldUnshield: return "Shield or unshield funds to see activity here"
+        case .mesh: return "Send or receive via mesh to see activity here"
+        case .wallet: return "Airdrops and other wallet activity will appear here"
+        }
+    }
 
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: showPendingOnly ? "checkmark.circle" : "doc.text")
+            Image(systemName: emptyIcon)
                 .font(.system(size: 60))
                 .foregroundColor(showPendingOnly ? .green : .secondary)
 
             VStack(spacing: 8) {
-                Text(showPendingOnly ? "All Synced!" : "No Activity Yet")
+                Text(emptyTitle)
                     .font(.title2)
                     .fontWeight(.bold)
 
-                Text(showPendingOnly
-                     ? "All transactions are synced"
-                     : "Your transaction history will appear here")
+                Text(emptyMessage)
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -355,7 +469,58 @@ struct EmptyActivityView: View {
     }
 }
 
-// MARK: - Filter Toggle
+// MARK: - Activity Type Filter Bar
+
+struct ActivityTypeFilterBar: View {
+    @Binding var selectedFilter: ActivityTypeFilter
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(ActivityTypeFilter.allCases, id: \.self) { filter in
+                    ActivityTypeFilterChip(
+                        filter: filter,
+                        isSelected: selectedFilter == filter
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            selectedFilter = filter
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+}
+
+struct ActivityTypeFilterChip: View {
+    let filter: ActivityTypeFilter
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 6) {
+                Image(systemName: filter.icon)
+                    .font(.system(size: 12, weight: .semibold))
+
+                Text(filter.rawValue)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+            }
+            .foregroundColor(isSelected ? .white : .secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(
+                Capsule()
+                    .fill(isSelected ? Color.blue : Color(.systemGray5))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Pending Filter Toggle
 
 struct ActivityFilterToggle: View {
     @Binding var showPendingOnly: Bool

@@ -11,14 +11,38 @@ struct WalletContainerConfig {
 // MARK: - Main Wallet Container
 
 /// Main wallet card with neumorphic styling for the blue theme
-struct MainWalletContainer<Badge: View, InputContent: View>: View {
+struct MainWalletContainer<Badge: View, InputContent: View, MixingContent: View>: View {
     let balance: Double
     let address: String
     let isRefreshing: Bool
     let showInput: Bool
+    let showMixing: Bool
     let onRefresh: () -> Void
     @ViewBuilder let badge: () -> Badge
     @ViewBuilder let inputContent: () -> InputContent
+    @ViewBuilder let mixingContent: () -> MixingContent
+
+    init(
+        balance: Double,
+        address: String,
+        isRefreshing: Bool,
+        showInput: Bool,
+        showMixing: Bool = false,
+        onRefresh: @escaping () -> Void,
+        @ViewBuilder badge: @escaping () -> Badge,
+        @ViewBuilder inputContent: @escaping () -> InputContent,
+        @ViewBuilder mixingContent: @escaping () -> MixingContent
+    ) {
+        self.balance = balance
+        self.address = address
+        self.isRefreshing = isRefreshing
+        self.showInput = showInput
+        self.showMixing = showMixing
+        self.onRefresh = onRefresh
+        self.badge = badge
+        self.inputContent = inputContent
+        self.mixingContent = mixingContent
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,12 +66,11 @@ struct MainWalletContainer<Badge: View, InputContent: View>: View {
                 NeuromorphicIconButton(
                     icon: "arrow.clockwise",
                     palette: .blue,
-                    size: 32
+                    size: 32,
+                    isActive: isRefreshing
                 ) {
                     onRefresh()
                 }
-                .rotationEffect(.degrees(isRefreshing ? 360 : 0))
-                .animation(isRefreshing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: isRefreshing)
 
                 badge()
             }
@@ -81,12 +104,24 @@ struct MainWalletContainer<Badge: View, InputContent: View>: View {
                 .padding(.vertical, 4)
 
             // Shield input (when active)
-            if showInput {
-                inputContent()
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            Group {
+                if showInput {
+                    inputContent()
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                }
             }
+            .animation(.easeInOut(duration: 0.25), value: showInput)
+
+            // Mixing progress (when active)
+            Group {
+                if showMixing {
+                    mixingContent()
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                }
+            }
+            .animation(.easeInOut(duration: 0.4), value: showMixing)
 
             Spacer()
                 .frame(height: 20)
@@ -172,28 +207,30 @@ struct ShieldUnshieldRow: View {
     let onUnshield: () -> Void
     let shieldDisabled: Bool
     let unshieldDisabled: Bool
+    var isShielding: Bool = false
+    var isUnshielding: Bool = false
 
     var body: some View {
         HStack(spacing: 60) {
             NeuromorphicActionButton(
                 icon: "eye.slash.fill",
                 label: "Shield",
-                palette: .blue
+                palette: .blue,
+                isActive: isShielding
             ) {
                 onShield()
             }
-            .opacity(shieldDisabled ? 0.5 : 1.0)
-            .disabled(shieldDisabled)
+            .opacity(shieldDisabled && !isShielding ? 0.5 : 1.0)
 
             NeuromorphicActionButton(
                 icon: "eye.fill",
                 label: "Unshield",
-                palette: .purple
+                palette: .purple,
+                isActive: isUnshielding
             ) {
                 onUnshield()
             }
-            .opacity(unshieldDisabled ? 0.5 : 1.0)
-            .disabled(unshieldDisabled)
+            .opacity(unshieldDisabled && !isUnshielding ? 0.5 : 1.0)
         }
     }
 }
@@ -213,10 +250,13 @@ struct ShieldUnshieldRow: View {
                     address: "7vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
                     isRefreshing: false,
                     showInput: false,
+                    showMixing: false,
                     onRefresh: {}
                 ) {
                     NetworkBadge(isDevnet: true, palette: .blue)
                 } inputContent: {
+                    EmptyView()
+                } mixingContent: {
                     EmptyView()
                 }
 
@@ -225,7 +265,9 @@ struct ShieldUnshieldRow: View {
                     onShield: {},
                     onUnshield: {},
                     shieldDisabled: false,
-                    unshieldDisabled: false
+                    unshieldDisabled: false,
+                    isShielding: false,
+                    isUnshielding: false
                 )
 
                 // Stealth wallet
