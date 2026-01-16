@@ -24,6 +24,12 @@
 		APP011 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC010 /* ActivityView.swift */; };
 		DBF9C4F3B63642FDC66D5D1C /* NeuromorphicButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A3E2C92377387BFEAE8F820 /* NeuromorphicButtons.swift */; };
 		PKG001 /* StealthCore in Frameworks */ = {isa = PBXBuildFile; productRef = PKG002 /* StealthCore */; };
+		TERM11 /* TerminalStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM01 /* TerminalStyle.swift */; };
+		TERM12 /* TerminalAnimations.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM02 /* TerminalAnimations.swift */; };
+		TERM13 /* TerminalBadges.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM03 /* TerminalBadges.swift */; };
+		TERM14 /* TerminalButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM04 /* TerminalButtons.swift */; };
+		TERM15 /* TerminalInputs.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM05 /* TerminalInputs.swift */; };
+		TERM16 /* TerminalWalletContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM06 /* TerminalWalletContainer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -45,6 +51,12 @@
 		SRC008 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		SRC009 /* WalletBackupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletBackupView.swift; sourceTree = "<group>"; };
 		SRC010 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
+		TERM01 /* TerminalStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalStyle.swift; sourceTree = "<group>"; };
+		TERM02 /* TerminalAnimations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalAnimations.swift; sourceTree = "<group>"; };
+		TERM03 /* TerminalBadges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalBadges.swift; sourceTree = "<group>"; };
+		TERM04 /* TerminalButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalButtons.swift; sourceTree = "<group>"; };
+		TERM05 /* TerminalInputs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalInputs.swift; sourceTree = "<group>"; };
+		TERM06 /* TerminalWalletContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalWalletContainer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -67,6 +79,12 @@
 				C8F146F15C8AAFFF8FB3AC3B /* NeuromorphicInputs.swift */,
 				2133D3E2C13036A4C97FADEA /* NeuromorphicWalletContainer.swift */,
 				798A1808C78A8F6E25F22FB5 /* WalletBadges.swift */,
+				TERM01 /* TerminalStyle.swift */,
+				TERM02 /* TerminalAnimations.swift */,
+				TERM03 /* TerminalBadges.swift */,
+				TERM04 /* TerminalButtons.swift */,
+				TERM05 /* TerminalInputs.swift */,
+				TERM06 /* TerminalWalletContainer.swift */,
 			);
 			name = Components;
 			path = Components;
@@ -238,6 +256,12 @@
 				84656F7CE8988B3E3F5623F0 /* NeuromorphicInputs.swift in Sources */,
 				9E829E0C65B6FC64E3675946 /* NeuromorphicWalletContainer.swift in Sources */,
 				84BA6574C79BEA0A42F83F1D /* WalletBadges.swift in Sources */,
+				TERM11 /* TerminalStyle.swift in Sources */,
+				TERM12 /* TerminalAnimations.swift in Sources */,
+				TERM13 /* TerminalBadges.swift in Sources */,
+				TERM14 /* TerminalButtons.swift in Sources */,
+				TERM15 /* TerminalInputs.swift in Sources */,
+				TERM16 /* TerminalWalletContainer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

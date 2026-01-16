@@ -19,34 +19,49 @@ struct WalletView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                // Gradient background
-                NeuromorphicPalette.pageBackground
+                // Pure black background
+                TerminalPalette.background
+                    .ignoresSafeArea()
+
+                // Scanline overlay
+                ScanlineOverlay()
                     .ignoresSafeArea()
 
                 ScrollView {
                     VStack(spacing: 20) {
-                        // Status badges (scroll away with content)
-                        HStack {
-                            Spacer()
-                            WalletHeaderStatus(
-                                isDevnet: walletViewModel.network == .devnet,
-                                isOnline: meshViewModel.isOnline,
-                                peerCount: meshViewModel.peerCount
-                            )
-                        }
-                        .padding(.horizontal, 16)
-
                         // Wallet content
                         walletContent
                     }
-                    .padding(.top, 8)
+                    .padding(.top, 40)
                 }
                 .scrollDismissesKeyboard(.immediately)
                 .onTapGesture {
                     dismissKeyboard()
                 }
             }
-            .navigationTitle("Wallet")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(TerminalPalette.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    HStack(spacing: 6) {
+                        Text("//")
+                            .foregroundColor(TerminalPalette.textMuted)
+                        Text("WALLET")
+                            .foregroundColor(TerminalPalette.cyan)
+                        Text("v1.0")
+                            .foregroundColor(TerminalPalette.textMuted)
+                    }
+                    .font(TerminalTypography.header(14))
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    TerminalStatusBadge(
+                        isOnline: meshViewModel.isOnline,
+                        peerCount: meshViewModel.peerCount
+                    )
+                }
+            }
             .alert("Shield Successful!", isPresented: $shieldSuccess) {
                 Button("OK") { }
             } message: {
@@ -71,8 +86,8 @@ struct WalletView: View {
 
     private var walletContent: some View {
         VStack(spacing: 20) {
-            // Main Wallet Container (Blue)
-            MainWalletContainer(
+            // Main Wallet Container (Cyan/Public)
+            TerminalMainWalletContainer(
                 balance: walletViewModel.mainWalletBalance,
                 address: walletViewModel.mainWalletAddress ?? "",
                 isRefreshing: isRefreshing,
@@ -83,10 +98,10 @@ struct WalletView: View {
                 EmptyView()  // Badge moved to header
             } inputContent: {
                 // Amount input with cancel/confirm
-                NeuromorphicAmountInput(
+                TerminalAmountInput(
                     amount: $shieldAmount,
                     maxAmount: walletViewModel.maxShieldAmount,
-                    palette: .blue,
+                    accent: .public,
                     onConfirm: performShield,
                     onCancel: {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -97,14 +112,18 @@ struct WalletView: View {
                 )
             } mixingContent: {
                 // Mixing progress indicator
-                ShieldMixingProgress(
+                TerminalMixingProgress(
                     mixProgress: walletViewModel.mixProgress,
-                    mixStatus: walletViewModel.mixStatus
+                    mixStatus: walletViewModel.mixStatus,
+                    accent: .public
                 )
+            } statusContent: {
+                // Network badge in title bar
+                TerminalNetworkBadge(isDevnet: walletViewModel.network == .devnet)
             }
 
             // Shield/Unshield Buttons
-            ShieldUnshieldRow(
+            TerminalShieldUnshieldRow(
                 onShield: {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showUnshieldConfirm = false
@@ -124,15 +143,15 @@ struct WalletView: View {
             )
 
             // Stealth Wallet Container (Purple)
-            StealthWalletContainer(
+            TerminalStealthWalletContainer(
                 balance: walletViewModel.stealthBalance,
                 showConfirm: showUnshieldConfirm
             ) {
-                QuantumBadge(palette: .purple)
+                TerminalQuantumBadge(accent: .stealth)
             } confirmContent: {
-                NeuromorphicUnshieldConfirm(
+                TerminalUnshieldConfirm(
                     amount: walletViewModel.maxUnshieldAmount,
-                    palette: .purple,
+                    accent: .stealth,
                     isLoading: walletViewModel.isUnshielding,
                     onConfirm: performUnshield,
                     onCancel: {
@@ -215,85 +234,6 @@ struct WalletView: View {
 
     private func dismissKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-    }
-}
-
-// MARK: - Shield Mixing Progress (Blue theme, inside wallet container)
-
-struct ShieldMixingProgress: View {
-    let mixProgress: Double
-    let mixStatus: String
-
-    var body: some View {
-        VStack(spacing: 12) {
-            // Header with spinner and status
-            HStack(spacing: 12) {
-                // Spinning indicator
-                ProgressView()
-                    .progressViewStyle(CircularProgressViewStyle(tint: NeuromorphicPalette.blue.accent))
-                    .scaleEffect(1.0)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Shielding...")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(NeuromorphicPalette.blue.textPrimary)
-
-                    Text(mixStatus.isEmpty ? "Creating stealth hops for privacy" : mixStatus)
-                        .font(.caption)
-                        .foregroundColor(NeuromorphicPalette.blue.textSecondary)
-                        .lineLimit(2)
-                }
-
-                Spacer()
-            }
-
-            // Progress bar
-            if mixProgress > 0 {
-                ProgressView(value: mixProgress)
-                    .progressViewStyle(LinearProgressViewStyle(tint: NeuromorphicPalette.blue.accent))
-                    .frame(height: 4)
-                    .clipShape(Capsule())
-            }
-        }
-        .padding(.vertical, 8)
-    }
-}
-
-// MARK: - Mix Progress Indicator (Legacy - Purple theme, standalone)
-
-struct MixProgressIndicator: View {
-    let mixProgress: Double
-    let mixStatus: String
-
-    var body: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 12) {
-                ProgressView()
-                    .progressViewStyle(CircularProgressViewStyle())
-                    .scaleEffect(0.8)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Auto-Mixing...")
-                        .font(.headline)
-                        .foregroundColor(NeuromorphicPalette.purple.textPrimary)
-                    Text(mixStatus.isEmpty ? "Creating stealth hops for privacy" : mixStatus)
-                        .font(.caption)
-                        .foregroundColor(NeuromorphicPalette.purple.textSecondary)
-                }
-
-                Spacer()
-            }
-            .padding()
-            .neuromorphicPurple(cornerRadius: 16)
-
-            // Progress bar
-            if mixProgress > 0 {
-                ProgressView(value: mixProgress)
-                    .progressViewStyle(LinearProgressViewStyle(tint: NeuromorphicPalette.purple.accent))
-                    .padding(.horizontal)
-            }
-        }
     }
 }
 
