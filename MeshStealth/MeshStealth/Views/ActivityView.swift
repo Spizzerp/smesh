@@ -4,17 +4,17 @@ import StealthCore
 // MARK: - Activity Type Filter
 
 enum ActivityTypeFilter: String, CaseIterable {
-    case all = "All"
-    case shieldUnshield = "Shield"
-    case mesh = "Mesh"
-    case wallet = "Wallet"
+    case all = "ALL"
+    case shieldUnshield = "SHIELD"
+    case mesh = "MESH"
+    case wallet = "WALLET"
 
-    var icon: String {
+    var terminalLabel: String {
         switch self {
-        case .all: return "list.bullet"
-        case .shieldUnshield: return "eye.slash.fill"
-        case .mesh: return "antenna.radiowaves.left.and.right"
-        case .wallet: return "wallet.pass.fill"
+        case .all: return "[*]"
+        case .shieldUnshield: return "[S]"
+        case .mesh: return "[M]"
+        case .wallet: return "[W]"
         }
     }
 
@@ -37,80 +37,107 @@ struct ActivityView: View {
     @EnvironmentObject var walletViewModel: WalletViewModel
     @EnvironmentObject var meshViewModel: MeshViewModel
 
-    @Namespace private var filterNamespace
     @State private var showPendingOnly = false
     @State private var selectedTypeFilter: ActivityTypeFilter = .all
     @State private var expandedActivities: Set<UUID> = []
 
     var body: some View {
         NavigationStack {
-            Group {
-                if filteredActivities.isEmpty {
-                    VStack(spacing: 16) {
-                        // Show filter bar even when empty
-                        ActivityTypeFilterBar(
-                            selectedFilter: $selectedTypeFilter
-                        )
+            ZStack {
+                TerminalPalette.background
+                    .ignoresSafeArea()
 
-                        Spacer()
+                ScanlineOverlay()
+                    .ignoresSafeArea()
 
-                        EmptyActivityView(
-                            showPendingOnly: showPendingOnly,
-                            selectedFilter: selectedTypeFilter
-                        )
-
-                        Spacer()
-                    }
-                } else {
-                    ScrollView {
+                Group {
+                    if filteredActivities.isEmpty {
                         VStack(spacing: 16) {
-                            // Type filter bar
-                            ActivityTypeFilterBar(
-                                selectedFilter: $selectedTypeFilter
+                            // Show filter bar even when empty
+                            TerminalActivityFilterBar(
+                                selectedFilter: $selectedTypeFilter,
+                                showPendingOnly: $showPendingOnly
                             )
 
-                            LazyVStack(spacing: 12) {
-                            ForEach(sortedDateKeys, id: \.self) { dateKey in
-                                Section {
-                                    ForEach(groupedActivities[dateKey] ?? []) { activity in
-                                        ActivityCard(
-                                            activity: activity,
-                                            childActivities: childActivities(for: activity.id),
-                                            isExpanded: expandedActivities.contains(activity.id),
-                                            onToggleExpand: {
-                                                withAnimation(.easeInOut(duration: 0.25)) {
-                                                    if expandedActivities.contains(activity.id) {
-                                                        expandedActivities.remove(activity.id)
-                                                    } else {
-                                                        expandedActivities.insert(activity.id)
-                                                    }
-                                                }
-                                            }
-                                        )
-                                    }
-                                } header: {
-                                    HStack {
-                                        Text(dateKey)
-                                            .font(.subheadline)
-                                            .fontWeight(.semibold)
-                                            .foregroundColor(.secondary)
-                                        Spacer()
-                                    }
-                                    .padding(.horizontal, 4)
-                                    .padding(.top, dateKey == sortedDateKeys.first ? 0 : 8)
-                                }
-                            }
-                            }
-                            .padding(.horizontal)
+                            Spacer()
+
+                            TerminalEmptyActivityView(
+                                showPendingOnly: showPendingOnly,
+                                selectedFilter: selectedTypeFilter
+                            )
+
+                            Spacer()
                         }
-                        .padding(.bottom)
+                        .padding(.top, 40)
+                    } else {
+                        ScrollView {
+                            VStack(spacing: 16) {
+                                // Type filter bar
+                                TerminalActivityFilterBar(
+                                    selectedFilter: $selectedTypeFilter,
+                                    showPendingOnly: $showPendingOnly
+                                )
+
+                                LazyVStack(spacing: 8) {
+                                    ForEach(sortedDateKeys, id: \.self) { dateKey in
+                                        Section {
+                                            ForEach(groupedActivities[dateKey] ?? []) { activity in
+                                                TerminalActivityCard(
+                                                    activity: activity,
+                                                    childActivities: childActivities(for: activity.id),
+                                                    isExpanded: expandedActivities.contains(activity.id),
+                                                    onToggleExpand: {
+                                                        withAnimation(.easeInOut(duration: 0.25)) {
+                                                            if expandedActivities.contains(activity.id) {
+                                                                expandedActivities.remove(activity.id)
+                                                            } else {
+                                                                expandedActivities.insert(activity.id)
+                                                            }
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                        } header: {
+                                            HStack {
+                                                Text("// \(dateKey.uppercased())")
+                                                    .font(TerminalTypography.label())
+                                                    .foregroundColor(TerminalPalette.textMuted)
+                                                Spacer()
+                                            }
+                                            .padding(.horizontal, 4)
+                                            .padding(.top, dateKey == sortedDateKeys.first ? 0 : 8)
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                            }
+                            .padding(.top, 40)
+                            .padding(.bottom, 16)
+                        }
                     }
                 }
             }
-            .navigationTitle("Activity")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(TerminalPalette.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    HStack(spacing: 6) {
+                        Text("//")
+                            .foregroundColor(TerminalPalette.textMuted)
+                        Text("ACTIVITY")
+                            .foregroundColor(TerminalPalette.cyan)
+                        Text("v1.0")
+                            .foregroundColor(TerminalPalette.textMuted)
+                    }
+                    .font(TerminalTypography.header(14))
+                }
                 ToolbarItem(placement: .topBarTrailing) {
-                    ActivityFilterToggle(showPendingOnly: $showPendingOnly, namespace: filterNamespace)
+                    TerminalStatusBadge(
+                        isOnline: meshViewModel.isOnline,
+                        peerCount: meshViewModel.peerCount
+                    )
                 }
             }
         }
@@ -182,9 +209,9 @@ struct ActivityView: View {
     }
 }
 
-// MARK: - Activity Card
+// MARK: - Terminal Activity Card
 
-struct ActivityCard: View {
+struct TerminalActivityCard: View {
     let activity: ActivityItem
     let childActivities: [ActivityItem]
     let isExpanded: Bool
@@ -198,52 +225,42 @@ struct ActivityCard: View {
         VStack(spacing: 0) {
             // Main activity row
             HStack(spacing: 12) {
-                // Activity type icon
-                ZStack {
-                    Circle()
-                        .fill(iconColor.opacity(0.15))
-                        .frame(width: 40, height: 40)
-
-                    Image(systemName: iconName)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(iconColor)
-                }
+                // Activity type indicator
+                Text(terminalIcon)
+                    .font(TerminalTypography.body(14))
+                    .foregroundColor(iconColor)
 
                 // Activity details
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack {
+                    HStack(spacing: 8) {
                         Text(activityTitle)
-                            .font(.subheadline)
-                            .fontWeight(.medium)
+                            .font(TerminalTypography.body(12))
+                            .foregroundColor(TerminalPalette.textPrimary)
 
                         if hasChildren {
-                            Text("\(childActivities.count) mix\(childActivities.count == 1 ? "" : "es")")
-                                .font(.caption2)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.gray))
+                            Text("[\(childActivities.count)x]")
+                                .font(TerminalTypography.label())
+                                .foregroundColor(TerminalPalette.textMuted)
                         }
                     }
 
-                    HStack(spacing: 4) {
+                    HStack(spacing: 8) {
                         Text(formattedTime)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(TerminalTypography.label())
+                            .foregroundColor(TerminalPalette.textMuted)
 
                         if activity.status == .pending {
-                            Text("Pending sync")
-                                .font(.caption)
-                                .foregroundColor(.orange)
+                            Text("[PENDING]")
+                                .font(TerminalTypography.label())
+                                .foregroundColor(TerminalPalette.warning)
                         } else if activity.status == .inProgress {
-                            Text("In progress")
-                                .font(.caption)
-                                .foregroundColor(.blue)
+                            Text("[IN_PROGRESS]")
+                                .font(TerminalTypography.label())
+                                .foregroundColor(TerminalPalette.cyan)
                         } else if activity.status == .failed {
-                            Text("Failed")
-                                .font(.caption)
-                                .foregroundColor(.red)
+                            Text("[FAILED]")
+                                .font(TerminalTypography.label())
+                                .foregroundColor(TerminalPalette.error)
                         }
                     }
                 }
@@ -253,27 +270,25 @@ struct ActivityCard: View {
                 // Amount
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(formattedAmount)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
+                        .font(TerminalTypography.body(12))
                         .foregroundColor(amountColor)
 
                     if activity.status == .completed,
                        let sig = activity.transactionSignature {
                         Text("\(sig.prefix(6))...")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
+                            .font(TerminalTypography.label())
+                            .foregroundColor(TerminalPalette.textMuted)
                     }
                 }
 
-                // Expand chevron for activities with children
+                // Expand indicator for activities with children
                 if hasChildren {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.secondary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Text(isExpanded ? "[v]" : "[>]")
+                        .font(TerminalTypography.label())
+                        .foregroundColor(TerminalPalette.cyan)
                 }
             }
-            .padding()
+            .padding(12)
             .contentShape(Rectangle())
             .onTapGesture {
                 if hasChildren {
@@ -283,71 +298,81 @@ struct ActivityCard: View {
 
             // Expanded child activities
             if isExpanded && hasChildren {
-                Divider()
-                    .padding(.horizontal)
+                Rectangle()
+                    .fill(TerminalPalette.border)
+                    .frame(height: 1)
+                    .padding(.horizontal, 12)
 
                 VStack(spacing: 0) {
                     ForEach(Array(childActivities.enumerated()), id: \.element.id) { index, child in
-                        ChildActivityRow(activity: child, index: index + 1)
+                        TerminalChildActivityRow(activity: child, index: index + 1)
                         if child.id != childActivities.last?.id {
-                            Divider()
-                                .padding(.leading, 52)
+                            Rectangle()
+                                .fill(TerminalPalette.border)
+                                .frame(height: 1)
+                                .padding(.leading, 36)
                         }
                     }
                 }
                 .padding(.bottom, 8)
             }
         }
-        .background(Color(.systemGray6))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .background(
+            RoundedRectangle(cornerRadius: 2)
+                .fill(TerminalPalette.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2)
+                        .stroke(TerminalPalette.border, lineWidth: 1)
+                )
+        )
     }
 
-    private var iconName: String {
+    private var terminalIcon: String {
         switch activity.type {
-        case .shield: return "arrow.down.circle.fill"
-        case .unshield: return "arrow.up.circle.fill"
-        case .meshSend: return "arrow.right.circle.fill"
-        case .meshReceive: return "arrow.left.circle.fill"
-        case .hop: return "arrow.triangle.2.circlepath"
-        case .airdrop: return "drop.circle.fill"
+        case .shield: return "[↓]"
+        case .unshield: return "[↑]"
+        case .meshSend: return "[→]"
+        case .meshReceive: return "[←]"
+        case .hop: return "[~]"
+        case .airdrop: return "[+]"
         }
     }
 
     private var iconColor: Color {
         switch activity.type {
-        case .shield: return .blue
-        case .unshield: return .green
-        case .meshSend: return .orange
-        case .meshReceive: return .purple
-        case .hop: return .gray
-        case .airdrop: return .cyan
+        case .shield: return TerminalPalette.cyan
+        case .unshield: return TerminalPalette.success
+        case .meshSend: return TerminalPalette.warning
+        case .meshReceive: return TerminalPalette.purple
+        case .hop: return TerminalPalette.textMuted
+        case .airdrop: return TerminalPalette.cyan
         }
     }
 
     private var activityTitle: String {
         switch activity.type {
-        case .shield: return "Shield"
-        case .unshield: return "Unshield"
+        case .shield: return "SHIELD"
+        case .unshield: return "UNSHIELD"
         case .meshSend:
             if let peer = activity.peerName {
-                return "Sent to \(peer)"
+                return "SEND -> \(peer.uppercased())"
             }
-            return "Sent"
+            return "SEND"
         case .meshReceive:
             if let peer = activity.peerName {
-                return "Received from \(peer)"
+                return "RECV <- \(peer.uppercased())"
             }
-            return "Received"
-        case .hop: return "Mixed"
-        case .airdrop: return "Airdrop"
+            return "RECEIVE"
+        case .hop: return "MIX"
+        case .airdrop: return "AIRDROP"
         }
     }
 
     private var amountColor: Color {
         switch activity.type {
-        case .shield, .hop: return .primary
-        case .unshield, .meshReceive, .airdrop: return .green
-        case .meshSend: return .orange
+        case .shield, .hop: return TerminalPalette.textPrimary
+        case .unshield, .meshReceive, .airdrop: return TerminalPalette.success
+        case .meshSend: return TerminalPalette.warning
         }
     }
 
@@ -369,196 +394,196 @@ struct ActivityCard: View {
     }
 }
 
-// MARK: - Child Activity Row (for hops)
+// MARK: - Terminal Child Activity Row (for hops)
 
-struct ChildActivityRow: View {
+struct TerminalChildActivityRow: View {
     let activity: ActivityItem
     let index: Int  // Sequential index for display
 
     var body: some View {
         HStack(spacing: 12) {
-            // Smaller icon for child
-            Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.gray)
-                .frame(width: 40, height: 24)
+            // Index and icon
+            Text(String(format: "%02d [~]", index))
+                .font(TerminalTypography.label())
+                .foregroundColor(TerminalPalette.textMuted)
+                .frame(width: 50, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Mix \(index)")
-                    .font(.caption)
-                    .fontWeight(.medium)
+                Text("HOP_\(index)")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textDim)
 
                 if let sig = activity.transactionSignature {
                     Text("\(sig.prefix(8))...")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .font(TerminalTypography.label())
+                        .foregroundColor(TerminalPalette.textMuted)
                 }
             }
 
             Spacer()
 
             Text(String(format: "%.4f SOL", activity.amountInSol))
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(TerminalTypography.label())
+                .foregroundColor(TerminalPalette.textDim)
         }
-        .padding(.horizontal)
+        .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
 }
 
-// MARK: - Empty State
+// MARK: - Terminal Empty State
 
-struct EmptyActivityView: View {
+struct TerminalEmptyActivityView: View {
     let showPendingOnly: Bool
     var selectedFilter: ActivityTypeFilter = .all
 
     private var emptyIcon: String {
         if showPendingOnly {
-            return "checkmark.circle"
+            return "[✓]"
         }
         switch selectedFilter {
-        case .all: return "doc.text"
-        case .shieldUnshield: return "eye.slash"
-        case .mesh: return "antenna.radiowaves.left.and.right"
-        case .wallet: return "wallet.pass"
+        case .all: return "[_]"
+        case .shieldUnshield: return "[#]"
+        case .mesh: return "[◉]"
+        case .wallet: return "[W]"
         }
     }
 
     private var emptyTitle: String {
         if showPendingOnly {
-            return "All Synced!"
+            return "ALL_SYNCED"
         }
         switch selectedFilter {
-        case .all: return "No Activity Yet"
-        case .shieldUnshield: return "No Shield Activity"
-        case .mesh: return "No Mesh Transactions"
-        case .wallet: return "No Wallet Activity"
+        case .all: return "NO_ACTIVITY"
+        case .shieldUnshield: return "NO_SHIELD_ACTIVITY"
+        case .mesh: return "NO_MESH_TRANSACTIONS"
+        case .wallet: return "NO_WALLET_ACTIVITY"
         }
     }
 
     private var emptyMessage: String {
         if showPendingOnly {
-            return "All transactions are synced"
+            return "// All transactions have been synced"
         }
         switch selectedFilter {
-        case .all: return "Your transaction history will appear here"
-        case .shieldUnshield: return "Shield or unshield funds to see activity here"
-        case .mesh: return "Send or receive via mesh to see activity here"
-        case .wallet: return "Airdrops and other wallet activity will appear here"
+        case .all: return "// Transaction history will appear here"
+        case .shieldUnshield: return "// Shield or unshield funds to see activity"
+        case .mesh: return "// Send or receive via mesh to see activity"
+        case .wallet: return "// Airdrops and wallet activity will appear here"
         }
     }
 
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: emptyIcon)
-                .font(.system(size: 60))
-                .foregroundColor(showPendingOnly ? .green : .secondary)
+            // ASCII art empty state
+            VStack(spacing: 4) {
+                Text("┌───────────────────┐")
+                Text("│                   │")
+                Text("│    \(emptyIcon)           │")
+                Text("│                   │")
+                Text("└───────────────────┘")
+            }
+            .font(TerminalTypography.body(14))
+            .foregroundColor(showPendingOnly ? TerminalPalette.success : TerminalPalette.textMuted)
 
             VStack(spacing: 8) {
                 Text(emptyTitle)
-                    .font(.title2)
-                    .fontWeight(.bold)
+                    .font(TerminalTypography.header())
+                    .foregroundColor(showPendingOnly ? TerminalPalette.success : TerminalPalette.textDim)
 
                 Text(emptyMessage)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textMuted)
                     .multilineTextAlignment(.center)
+            }
+
+            if !showPendingOnly {
+                Text("> AWAITING_DATA")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textMuted)
             }
         }
         .padding()
     }
 }
 
-// MARK: - Activity Type Filter Bar
+// MARK: - Terminal Activity Filter Bar
 
-struct ActivityTypeFilterBar: View {
+struct TerminalActivityFilterBar: View {
     @Binding var selectedFilter: ActivityTypeFilter
+    @Binding var showPendingOnly: Bool
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(ActivityTypeFilter.allCases, id: \.self) { filter in
-                    ActivityTypeFilterChip(
-                        filter: filter,
-                        isSelected: selectedFilter == filter
-                    ) {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            selectedFilter = filter
-                        }
+        HStack(spacing: 8) {
+            // Type filters
+            ForEach(ActivityTypeFilter.allCases, id: \.self) { filter in
+                TerminalFilterChip(
+                    label: filter.terminalLabel,
+                    title: filter.rawValue,
+                    isSelected: selectedFilter == filter
+                ) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selectedFilter = filter
                     }
                 }
             }
-            .padding(.horizontal)
+
+            Spacer()
+
+            // Pending toggle
+            TerminalFilterChip(
+                label: "[!]",
+                title: "PENDING",
+                isSelected: showPendingOnly,
+                accent: TerminalPalette.warning
+            ) {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showPendingOnly.toggle()
+                }
+            }
         }
+        .padding(.horizontal, 16)
     }
 }
 
-struct ActivityTypeFilterChip: View {
-    let filter: ActivityTypeFilter
+struct TerminalFilterChip: View {
+    let label: String
+    let title: String
     let isSelected: Bool
+    var accent: Color = TerminalPalette.cyan
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 6) {
-                Image(systemName: filter.icon)
-                    .font(.system(size: 12, weight: .semibold))
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(TerminalTypography.label())
 
-                Text(filter.rawValue)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+                Text(title)
+                    .font(TerminalTypography.label())
             }
-            .foregroundColor(isSelected ? .white : .secondary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            .foregroundColor(isSelected ? accent : TerminalPalette.textMuted)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
             .background(
-                Capsule()
-                    .fill(isSelected ? Color.blue : Color(.systemGray5))
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(isSelected ? accent.opacity(0.15) : TerminalPalette.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 2)
+                            .stroke(isSelected ? accent : TerminalPalette.border, lineWidth: 1)
+                    )
             )
         }
         .buttonStyle(.plain)
     }
 }
 
-// MARK: - Pending Filter Toggle
-
-struct ActivityFilterToggle: View {
-    @Binding var showPendingOnly: Bool
-    var namespace: Namespace.ID
-
-    var body: some View {
-        GlassEffectContainer(spacing: 4) {
-            HStack(spacing: 4) {
-                Image(systemName: "list.bullet")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(showPendingOnly ? .secondary : .white)
-                    .frame(width: 36, height: 36)
-                    .contentShape(Rectangle())
-                    .glassEffect()
-                    .glassEffectUnion(id: "filter", namespace: namespace)
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showPendingOnly = false
-                        }
-                    }
-
-                Image(systemName: "clock.badge.exclamationmark")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(showPendingOnly ? .white : .secondary)
-                    .frame(width: 36, height: 36)
-                    .contentShape(Rectangle())
-                    .glassEffect()
-                    .glassEffectUnion(id: "filter", namespace: namespace)
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showPendingOnly = true
-                        }
-                    }
-            }
-        }
-    }
-}
-
 #Preview {
-    ActivityView()
+    ZStack {
+        TerminalPalette.background
+            .ignoresSafeArea()
+        ScanlineOverlay()
+            .ignoresSafeArea()
+        ActivityView()
+    }
 }

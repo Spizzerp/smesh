@@ -10,7 +10,10 @@ struct NearbyPeersView: View {
     var body: some View {
         NavigationStack {
             mainContent
-                .navigationTitle("Nearby")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(TerminalPalette.background, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+                .toolbarColorScheme(.dark, for: .navigationBar)
                 .toolbar { toolbarContent }
                 .sheet(isPresented: $showingSendSheet) { sendSheetContent }
                 .alert("Address Request", isPresented: $showingAddressRequest) {
@@ -34,13 +37,16 @@ struct NearbyPeersView: View {
     @ViewBuilder
     private var mainContent: some View {
         ZStack {
-            Color(.systemGroupedBackground)
+            TerminalPalette.background
+                .ignoresSafeArea()
+
+            ScanlineOverlay()
                 .ignoresSafeArea()
 
             if meshViewModel.hasNearbyPeers {
                 peersScrollView
             } else {
-                ScanningView(isActive: meshViewModel.isActive)
+                TerminalScanningView(isActive: meshViewModel.isActive)
             }
         }
     }
@@ -48,18 +54,20 @@ struct NearbyPeersView: View {
     @ViewBuilder
     private var peersScrollView: some View {
         ScrollView {
-            VStack(spacing: 20) {
+            VStack(spacing: 16) {
                 closestPeerCard
                 otherPeersSection
             }
-            .padding()
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, 16)
         }
     }
 
     @ViewBuilder
     private var closestPeerCard: some View {
         if let closest = meshViewModel.closestPeer {
-            TapToPayCard(peer: closest) {
+            TerminalTapToPayCard(peer: closest) {
                 selectedPeer = closest
                 requestAddressFromPeer(closest)
             }
@@ -70,7 +78,7 @@ struct NearbyPeersView: View {
     private var otherPeersSection: some View {
         if meshViewModel.nearbyPeers.count > 1 {
             let otherPeers = meshViewModel.nearbyPeers.filter { $0.id != meshViewModel.closestPeer?.id }
-            OtherPeersSection(
+            TerminalOtherPeersSection(
                 peers: otherPeers,
                 onSelect: { peer in
                     selectedPeer = peer
@@ -84,6 +92,17 @@ struct NearbyPeersView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            HStack(spacing: 6) {
+                Text("//")
+                    .foregroundColor(TerminalPalette.textMuted)
+                Text("MESH")
+                    .foregroundColor(TerminalPalette.cyan)
+                Text("v1.0")
+                    .foregroundColor(TerminalPalette.textMuted)
+            }
+            .font(TerminalTypography.header(14))
+        }
         ToolbarItem(placement: .topBarTrailing) {
             meshToggleButton
         }
@@ -97,9 +116,11 @@ struct NearbyPeersView: View {
                 meshViewModel.startMesh()
             }
         } label: {
-            let iconName = meshViewModel.isActive ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash"
-            Image(systemName: iconName)
+            Text(meshViewModel.isActive ? "[ACTIVE]" : "[START]")
+                .font(TerminalTypography.label())
+                .foregroundColor(meshViewModel.isActive ? TerminalPalette.success : TerminalPalette.cyan)
         }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Sheet
@@ -145,158 +166,185 @@ struct NearbyPeersView: View {
     }
 }
 
-// MARK: - Tap to Pay Card
+// MARK: - Terminal Tap to Pay Card
 
-struct TapToPayCard: View {
+struct TerminalTapToPayCard: View {
     let peer: NearbyPeer
     let onTap: () -> Void
 
-    @State private var isPulsing = false
+    @State private var cursorVisible = true
 
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 16) {
-                // Pulsing indicator
-                ZStack {
-                    Circle()
-                        .fill(Color.blue.opacity(0.1))
-                        .frame(width: 120, height: 120)
-                        .scaleEffect(isPulsing ? 1.2 : 1.0)
-                        .opacity(isPulsing ? 0 : 1)
+            VStack(spacing: 0) {
+                // Title bar
+                TerminalTitleBar(title: "[TARGET_NODE]", accent: .public)
 
-                    Circle()
-                        .fill(Color.blue.opacity(0.2))
-                        .frame(width: 100, height: 100)
+                VStack(spacing: 16) {
+                    // ASCII art tap indicator
+                    VStack(spacing: 4) {
+                        Text("┌─────────────┐")
+                        Text("│  [>_SEND]   │")
+                        Text("│             │")
+                        Text("│    ◉◉◉◉     │")
+                        Text("│             │")
+                        Text("└─────────────┘")
+                    }
+                    .font(TerminalTypography.body(14))
+                    .foregroundColor(TerminalPalette.cyan)
+                    .terminalGlow(TerminalPalette.cyan, radius: 4)
 
-                    Image(systemName: "hand.tap.fill")
-                        .font(.system(size: 40))
-                        .foregroundColor(.blue)
-                }
+                    // Device info
+                    VStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            Text(">")
+                                .foregroundColor(TerminalPalette.cyan)
+                            Text("TAP TO SEND")
+                                .foregroundColor(TerminalPalette.textPrimary)
+                            if cursorVisible {
+                                Text("_")
+                                    .foregroundColor(TerminalPalette.cyan)
+                            }
+                        }
+                        .font(TerminalTypography.header())
 
-                VStack(spacing: 4) {
-                    Text("Tap to Send")
-                        .font(.title2)
-                        .fontWeight(.bold)
+                        Text("// \(peer.name ?? "UNKNOWN_NODE")")
+                            .font(TerminalTypography.label())
+                            .foregroundColor(TerminalPalette.textMuted)
 
-                    Text(peer.name ?? "Unknown Device")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                        HStack(spacing: 12) {
+                            TerminalSignalIndicator(strength: peer.signalStrength)
+                            Text(peer.proximityDescription.uppercased())
+                                .font(TerminalTypography.label())
+                                .foregroundColor(TerminalPalette.textDim)
+                        }
+                    }
 
-                    HStack(spacing: 4) {
-                        SignalStrengthIndicator(strength: peer.signalStrength)
-                        Text(peer.proximityDescription)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                    // Post-quantum badge
+                    if peer.supportsHybrid {
+                        TerminalQuantumBadge(accent: .stealth)
                     }
                 }
-
-                if peer.supportsHybrid {
-                    Label("Post-Quantum Secure", systemImage: "lock.shield.fill")
-                        .font(.caption)
-                        .foregroundColor(.purple)
-                }
+                .padding(16)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 32)
             .background(
-                RoundedRectangle(cornerRadius: 24)
-                    .fill(Color(.systemBackground))
-                    .shadow(color: .blue.opacity(0.2), radius: 20, y: 10)
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(TerminalPalette.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 2)
+                            .stroke(TerminalAccent.public.dimColor, lineWidth: 1)
+                    )
             )
         }
-        .buttonStyle(ScaleButtonStyle())
+        .buttonStyle(TerminalScaleButtonStyle())
         .onAppear {
-            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false)) {
-                isPulsing = true
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+                cursorVisible.toggle()
             }
         }
     }
 }
 
-struct ScaleButtonStyle: ButtonStyle {
+struct TerminalScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
             .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
     }
 }
 
-// MARK: - Other Peers Section
+// MARK: - Terminal Other Peers Section
 
-struct OtherPeersSection: View {
+struct TerminalOtherPeersSection: View {
     let peers: [NearbyPeer]
     let onSelect: (NearbyPeer) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Other Nearby Devices")
-                .font(.headline)
-                .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            // Title bar
+            TerminalTitleBar(title: "[OTHER_NODES]", accent: .public)
 
-            ForEach(peers) { peer in
-                PeerRow(peer: peer) {
-                    onSelect(peer)
+            VStack(spacing: 0) {
+                ForEach(Array(peers.enumerated()), id: \.element.id) { index, peer in
+                    TerminalPeerRow(peer: peer, index: index) {
+                        onSelect(peer)
+                    }
+
+                    if index < peers.count - 1 {
+                        Rectangle()
+                            .fill(TerminalPalette.border)
+                            .frame(height: 1)
+                    }
                 }
             }
+            .padding(12)
         }
+        .background(
+            RoundedRectangle(cornerRadius: 2)
+                .fill(TerminalPalette.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2)
+                        .stroke(TerminalAccent.public.dimColor, lineWidth: 1)
+                )
+        )
     }
 }
 
-struct PeerRow: View {
+struct TerminalPeerRow: View {
     let peer: NearbyPeer
+    let index: Int
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 12) {
+                // Index number
+                Text(String(format: "%02d", index + 1))
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textMuted)
+
                 // Signal indicator
-                SignalStrengthIndicator(strength: peer.signalStrength)
-                    .frame(width: 24)
+                TerminalSignalIndicator(strength: peer.signalStrength)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(peer.name ?? "Unknown Device")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.primary)
+                    Text(peer.name ?? "UNKNOWN_NODE")
+                        .font(TerminalTypography.body(12))
+                        .foregroundColor(TerminalPalette.textPrimary)
 
-                    Text(peer.proximityDescription)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    Text(peer.proximityDescription.uppercased())
+                        .font(TerminalTypography.label())
+                        .foregroundColor(TerminalPalette.textMuted)
                 }
 
                 Spacer()
 
                 if peer.supportsHybrid {
-                    Image(systemName: "lock.shield.fill")
-                        .font(.caption)
-                        .foregroundColor(.purple)
+                    Text("[PQ]")
+                        .font(TerminalTypography.label())
+                        .foregroundColor(TerminalPalette.purple)
                 }
 
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Text("[>]")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.cyan)
             }
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(.systemBackground))
-            )
+            .padding(.vertical, 8)
         }
         .buttonStyle(.plain)
     }
 }
 
-// MARK: - Signal Strength Indicator
+// MARK: - Terminal Signal Indicator
 
-struct SignalStrengthIndicator: View {
+struct TerminalSignalIndicator: View {
     let strength: Int
 
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(0..<4) { index in
-                RoundedRectangle(cornerRadius: 1)
+            ForEach(0..<4, id: \.self) { index in
+                Rectangle()
                     .fill(barColor(for: index))
-                    .frame(width: 4, height: CGFloat(6 + index * 3))
+                    .frame(width: 3, height: CGFloat(4 + index * 3))
             }
         }
     }
@@ -305,68 +353,125 @@ struct SignalStrengthIndicator: View {
         let threshold = index * 25
         if strength >= threshold {
             switch strength {
-            case 75...: return .green
-            case 50..<75: return .yellow
-            default: return .orange
+            case 75...: return TerminalPalette.success
+            case 50..<75: return TerminalPalette.warning
+            default: return TerminalPalette.error
             }
         }
-        return .gray.opacity(0.3)
+        return TerminalPalette.border
     }
 }
 
-// MARK: - Scanning View
+// MARK: - Terminal Scanning View
 
-struct ScanningView: View {
+struct TerminalScanningView: View {
     let isActive: Bool
 
-    @State private var rotation = 0.0
+    @State private var pulseScale: CGFloat = 1.0
+    @State private var pulseOpacity: Double = 0.8
+    @State private var spinnerIndex = 0
+    private let spinnerFrames = ["|", "/", "-", "\\"]
 
     var body: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 32) {
+            // Pulsating circle radar
             ZStack {
-                Circle()
-                    .stroke(Color.blue.opacity(0.2), lineWidth: 2)
-                    .frame(width: 150, height: 150)
+                // Outer pulse rings (when active)
+                if isActive {
+                    ForEach(0..<3, id: \.self) { index in
+                        Circle()
+                            .stroke(TerminalPalette.cyan, lineWidth: 1)
+                            .frame(width: 120, height: 120)
+                            .scaleEffect(pulseScale + CGFloat(index) * 0.3)
+                            .opacity(pulseOpacity - Double(index) * 0.25)
+                    }
+                }
 
+                // Static outer ring
                 Circle()
-                    .trim(from: 0, to: 0.3)
-                    .stroke(Color.blue, lineWidth: 2)
-                    .frame(width: 150, height: 150)
-                    .rotationEffect(.degrees(rotation))
+                    .stroke(isActive ? TerminalPalette.cyan : TerminalPalette.textMuted, lineWidth: 2)
+                    .frame(width: 120, height: 120)
 
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 50))
-                    .foregroundColor(.blue)
+                // Middle ring
+                Circle()
+                    .stroke(isActive ? TerminalPalette.cyan.opacity(0.5) : TerminalPalette.textMuted.opacity(0.3), lineWidth: 1)
+                    .frame(width: 80, height: 80)
+
+                // Inner ring
+                Circle()
+                    .stroke(isActive ? TerminalPalette.cyan.opacity(0.3) : TerminalPalette.textMuted.opacity(0.2), lineWidth: 1)
+                    .frame(width: 40, height: 40)
+
+                // Center dot
+                Circle()
+                    .fill(isActive ? TerminalPalette.cyan : TerminalPalette.textMuted)
+                    .frame(width: 8, height: 8)
+                    .shadow(color: isActive ? TerminalPalette.cyan : .clear, radius: 8)
             }
+            .frame(width: 160, height: 160)
 
-            VStack(spacing: 8) {
-                Text(isActive ? "Scanning for nearby devices..." : "Mesh Inactive")
-                    .font(.headline)
+            // Status text
+            VStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    if isActive {
+                        Text(spinnerFrames[spinnerIndex])
+                            .font(TerminalTypography.body(16))
+                            .foregroundColor(TerminalPalette.cyan)
+                    }
 
-                Text(isActive ? "Move closer to another device to connect" : "Tap the antenna icon to start scanning")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    Text(isActive ? "SCANNING" : "MESH_INACTIVE")
+                        .font(TerminalTypography.header())
+                        .foregroundColor(isActive ? TerminalPalette.cyan : TerminalPalette.textMuted)
+
+                    if isActive {
+                        TerminalLoadingDots(color: TerminalPalette.cyan)
+                    }
+                }
+
+                Text(isActive ? "// Searching for nearby mesh nodes" : "// Tap [START] to begin scanning")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textMuted)
                     .multilineTextAlignment(.center)
+
+                if !isActive {
+                    Text("> AWAITING_INPUT")
+                        .font(TerminalTypography.label())
+                        .foregroundColor(TerminalPalette.textDim)
+                }
             }
-            .padding(.horizontal, 40)
         }
         .onAppear {
             if isActive {
-                withAnimation(.linear(duration: 2).repeatForever(autoreverses: false)) {
-                    rotation = 360
-                }
+                startAnimations()
             }
         }
         .onChange(of: isActive) { _, active in
             if active {
-                withAnimation(.linear(duration: 2).repeatForever(autoreverses: false)) {
-                    rotation = 360
-                }
+                startAnimations()
             }
+        }
+    }
+
+    private func startAnimations() {
+        // Pulse animation
+        withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+            pulseScale = 1.4
+            pulseOpacity = 0.0
+        }
+
+        // Spinner animation
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            spinnerIndex = (spinnerIndex + 1) % spinnerFrames.count
         }
     }
 }
 
 #Preview {
-    NearbyPeersView()
+    ZStack {
+        TerminalPalette.background
+            .ignoresSafeArea()
+        ScanlineOverlay()
+            .ignoresSafeArea()
+        TerminalScanningView(isActive: true)
+    }
 }
