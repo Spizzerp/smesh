@@ -38,6 +38,12 @@ struct WalletView: View {
                 .onTapGesture {
                     dismissKeyboard()
                 }
+
+                // Settlement overlay
+                // Note: TerminalSettlementOverlay.swift needs to be added to Xcode project
+                // if walletViewModel.isSettling, let progress = walletViewModel.settlementProgress {
+                //     TerminalSettlementOverlay(progress: progress)
+                // }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(TerminalPalette.background, for: .navigationBar)

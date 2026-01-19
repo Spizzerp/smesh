@@ -23,10 +23,26 @@ struct SettingsView: View {
                     VStack(spacing: 16) {
                         // Wallet Section
                         TerminalSettingsSection(title: "[WALLET_CONFIG]") {
-                            // Meta-address display
+                            // Main wallet address
+                            TerminalSettingsRow(
+                                label: "MAIN_ADDR",
+                                value: truncatedMainAddress,
+                                valueColor: TerminalPalette.cyan
+                            )
+
+                            // Backup main wallet
+                            TerminalSettingsRow(
+                                label: "MAIN_ADDR_BACKUP",
+                                value: "[EXPORT]",
+                                showChevron: true
+                            ) {
+                                showingBackupWallet = true
+                            }
+
+                            // Stealth meta-address display
                             TerminalSettingsRow(
                                 label: "STEALTH_ADDR",
-                                value: truncatedAddress,
+                                value: truncatedStealthAddress,
                                 showChevron: true
                             ) {
                                 showingMetaAddress = true
@@ -38,15 +54,6 @@ struct SettingsView: View {
                                 value: walletViewModel.hasPostQuantum ? "[PQ:MLKEM768]" : "[CLASSICAL]",
                                 valueColor: walletViewModel.hasPostQuantum ? TerminalPalette.purple : TerminalPalette.textDim
                             )
-
-                            // Backup wallet
-                            TerminalSettingsRow(
-                                label: "BACKUP",
-                                value: "[EXPORT]",
-                                showChevron: true
-                            ) {
-                                showingBackupWallet = true
-                            }
                         }
 
                         // Network Section
@@ -191,7 +198,12 @@ struct SettingsView: View {
         }
     }
 
-    private var truncatedAddress: String {
+    private var truncatedMainAddress: String {
+        guard let addr = walletViewModel.mainWalletAddress else { return "NOT_SET" }
+        return "\(addr.prefix(6))...\(addr.suffix(4))"
+    }
+
+    private var truncatedStealthAddress: String {
         guard let addr = walletViewModel.displayMetaAddress else { return "NOT_SET" }
         return "\(addr.prefix(6))...\(addr.suffix(4))"
     }

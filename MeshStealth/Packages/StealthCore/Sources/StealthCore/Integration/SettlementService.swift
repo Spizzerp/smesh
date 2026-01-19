@@ -100,8 +100,9 @@ public class SettlementService: ObservableObject {
 
     private let walletManager: StealthWalletManager
     private let networkMonitor: NetworkMonitor
-    private let rpcClient: SolanaRPCClient
+    private let rpcClient: DevnetFaucet
     private let config: SettlementConfiguration
+    private let estimatedFee: UInt64 = 5000  // 0.000005 SOL per signature
 
     // MARK: - Private
 
@@ -119,7 +120,7 @@ public class SettlementService: ObservableObject {
     public init(
         walletManager: StealthWalletManager,
         networkMonitor: NetworkMonitor,
-        rpcClient: SolanaRPCClient,
+        rpcClient: DevnetFaucet = DevnetFaucet(),
         config: SettlementConfiguration = .default
     ) {
         self.walletManager = walletManager
@@ -172,18 +173,36 @@ public class SettlementService: ObservableObject {
                 continue  // Skip if max attempts reached
             }
 
+            // Check if payment is due for retry
+            if let nextRetry = payment.nextRetryAt, nextRetry > Date() {
+                continue  // Not time yet
+            }
+
             let result = await settlePayment(payment)
             lastResult = result
             resultSubject.send(result)
 
             if !result.success {
-                // Wait before next attempt
-                try? await Task.sleep(nanoseconds: UInt64(config.retryDelay * 1_000_000_000))
+                // Exponential backoff before next payment
+                let delay = calculateBackoffDelay(attempt: result.attemptNumber)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
     }
 
+    /// Calculate exponential backoff delay
+    /// - Parameter attempt: Current attempt number (1-based)
+    /// - Returns: Delay in seconds
+    private func calculateBackoffDelay(attempt: Int) -> TimeInterval {
+        // Exponential backoff: 30s, 60s, 120s, 240s, 480s (capped at 8 minutes)
+        let baseDelay = config.retryDelay  // 30 seconds default
+        let maxDelay: TimeInterval = 480   // 8 minutes cap
+        let delay = baseDelay * pow(2.0, Double(attempt - 1))
+        return min(delay, maxDelay)
+    }
+
     /// Settle a single payment
+    /// Settles to a NEW stealth address (privacy hop) rather than main wallet
     public func settlePayment(_ payment: PendingPayment) async -> SettlementResult {
         let attemptNumber = payment.settlementAttempts + 1
 
@@ -192,10 +211,12 @@ public class SettlementService: ObservableObject {
 
         do {
             // 1. Derive the spending private key
+            print("[SETTLE] Deriving spending key for payment \(payment.id)")
             let spendingKey = try walletManager.deriveSpendingKey(for: payment)
 
             // 2. Get current balance of stealth address
-            let balance = try await rpcClient.getBalance(pubkey: payment.stealthAddress)
+            let balance = try await rpcClient.getBalance(address: payment.stealthAddress)
+            print("[SETTLE] Balance: \(balance) lamports")
 
             guard balance >= config.minBalanceForSettlement else {
                 throw SettlementError.insufficientBalance(
@@ -204,24 +225,53 @@ public class SettlementService: ObservableObject {
                 )
             }
 
-            // 3. Get destination address (user's main wallet or derived)
-            guard let destinationAddress = getSettlementDestination() else {
-                throw SettlementError.noDestinationAddress
-            }
+            // 3. Generate new stealth destination (privacy hop to ourselves)
+            let destination = try getSettlementDestination()
+            print("[SETTLE] New stealth destination: \(destination.address)")
 
-            // 4. Build and sign transaction
+            // 4. Calculate transfer amount (leave fee for transaction)
+            let transferAmount = balance - estimatedFee
+
+            // 5. Build and submit transaction
             let signature = try await buildAndSubmitTransfer(
                 from: payment.stealthAddress,
-                to: destinationAddress,
-                amount: balance - 5000,  // Leave some for fee
+                to: destination.address,
+                amount: transferAmount,
                 spendingKey: spendingKey
             )
+            print("[SETTLE] Transaction confirmed: \(signature)")
 
-            // 5. Mark as settled
+            // 6. Create new PendingPayment for the destination
+            let newPayment = PendingPayment(
+                stealthAddress: destination.address,
+                ephemeralPublicKey: destination.ephemeralKey,
+                mlkemCiphertext: destination.ciphertext,
+                amount: transferAmount,
+                tokenMint: payment.tokenMint,
+                viewTag: destination.viewTag,
+                status: .received,
+                isShielded: true,  // Treat as shielded (skip auto-settlement)
+                hopCount: payment.hopCount + 1,
+                originalPaymentId: payment.originalPaymentId ?? payment.id,
+                parentPaymentId: payment.id
+            )
+            walletManager.addPendingPayment(newPayment)
+            print("[SETTLE] Created new payment at destination: \(newPayment.id)")
+
+            // 7. Mark original as settled
             walletManager.updatePaymentStatus(
                 id: payment.id,
                 status: .settled,
                 signature: signature
+            )
+
+            // 8. Record hop activity
+            walletManager.recordHopActivity(
+                amount: transferAmount,
+                stealthAddress: destination.address,
+                hopCount: newPayment.hopCount,
+                signature: signature,
+                parentActivityId: nil
             )
 
             return SettlementResult(
@@ -232,11 +282,18 @@ public class SettlementService: ObservableObject {
             )
 
         } catch {
-            // Mark as failed
-            walletManager.updatePaymentStatus(
+            print("[SETTLE] Settlement failed: \(error)")
+
+            // Calculate next retry time with exponential backoff
+            let delay = calculateBackoffDelay(attempt: attemptNumber)
+            let nextRetryAt = Date().addingTimeInterval(delay)
+
+            // Mark as failed with next retry time
+            walletManager.updatePaymentStatusWithRetry(
                 id: payment.id,
                 status: .failed,
-                error: error.localizedDescription
+                error: error.localizedDescription,
+                nextRetryAt: nextRetryAt
             )
 
             return SettlementResult(
@@ -257,40 +314,119 @@ public class SettlementService: ObservableObject {
 
     // MARK: - Transaction Building
 
+    /// Build and submit a transfer from a stealth address
+    /// Follows the same pattern as ShieldService
     private func buildAndSubmitTransfer(
         from sourceAddress: String,
         to destinationAddress: String,
         amount: UInt64,
         spendingKey: Data
     ) async throws -> String {
-        // Get recent blockhash
-        let blockhash = try await rpcClient.getLatestBlockhash()
+        print("[SETTLE-TX] Building transfer from \(sourceAddress) to \(destinationAddress)")
+        print("[SETTLE-TX] Amount: \(amount) lamports")
 
-        // Build transfer instruction
-        // Note: In a full implementation, this would:
-        // 1. Create a proper Solana transaction
-        // 2. Sign with the spending key
-        // 3. Submit to the network
-        // For now, we'll simulate success
+        // 1. Create wallet from spending key (raw scalar, not seed-expanded)
+        let stealthWallet: SolanaWallet
+        do {
+            stealthWallet = try SolanaWallet(stealthScalar: spendingKey)
+        } catch {
+            throw SettlementError.transactionFailed("Failed to create wallet from spending key: \(error.localizedDescription)")
+        }
 
-        // TODO: Implement actual transaction building and signing
-        // This requires proper ed25519 signing from the derived spending key
+        // 2. Verify derived address matches source
+        let derivedAddress = await stealthWallet.address
+        guard derivedAddress == sourceAddress else {
+            print("[SETTLE-TX] Address mismatch!")
+            print("[SETTLE-TX]   Expected: \(sourceAddress)")
+            print("[SETTLE-TX]   Derived:  \(derivedAddress)")
+            throw SettlementError.transactionFailed("Spending key mismatch - derived address doesn't match source")
+        }
 
-        throw SettlementError.notImplemented(
-            "Full transaction building requires ed25519 signing integration"
+        // 3. Get recent blockhash
+        let blockhash = try await rpcClient.getRecentBlockhash()
+
+        // 4. Build transfer transaction
+        let fromPubkey = await stealthWallet.publicKeyData
+        guard let toPubkey = Data(base58Decoding: destinationAddress) else {
+            throw SettlementError.transactionFailed("Invalid destination address")
+        }
+
+        let message = try SolanaTransaction.buildTransfer(
+            from: fromPubkey,
+            to: toPubkey,
+            lamports: amount,
+            recentBlockhash: blockhash
         )
+
+        // 5. Sign with stealth wallet
+        let messageBytes = message.serialize()
+        let signature: Data
+        do {
+            signature = try await stealthWallet.sign(messageBytes)
+        } catch {
+            throw SettlementError.transactionFailed("Failed to sign transaction: \(error.localizedDescription)")
+        }
+
+        // 6. Build signed transaction
+        let signedTx = try SolanaTransaction.buildSignedTransaction(
+            message: message,
+            signature: signature
+        )
+
+        // 7. Submit and wait for confirmation
+        let txSignature: String
+        do {
+            txSignature = try await rpcClient.sendTransaction(signedTx)
+        } catch {
+            throw SettlementError.transactionFailed("Failed to send transaction: \(error.localizedDescription)")
+        }
+
+        // 8. Wait for confirmation with configured timeout
+        try await rpcClient.waitForConfirmation(
+            signature: txSignature,
+            timeout: config.transactionTimeout
+        )
+
+        return txSignature
     }
 
-    private func getSettlementDestination() -> String? {
-        // In a full implementation, this would return the user's main wallet address
-        // For now, return the spending public key from the keypair
-        guard let keyPair = walletManager.keyPair else { return nil }
-        return SolanaRPCClient.encodePublicKey(keyPair.spendingPublicKey)
+    /// Settlement destination info
+    private struct SettlementDestination {
+        let address: String
+        let ephemeralKey: Data
+        let ciphertext: Data?
+        let viewTag: UInt8
+    }
+
+    /// Generate a new stealth address as settlement destination
+    /// This provides a privacy hop - funds settle to a NEW stealth address rather than main wallet
+    private func getSettlementDestination() throws -> SettlementDestination {
+        guard let keyPair = walletManager.keyPair else {
+            throw SettlementError.noDestinationAddress
+        }
+
+        // Use hybrid meta-address if post-quantum keys available
+        let metaAddress = keyPair.hasPostQuantum
+            ? keyPair.hybridMetaAddressString
+            : keyPair.metaAddressString
+
+        // Generate new stealth address (to ourselves) for privacy
+        let result = try StealthAddressGenerator.generateStealthAddressAuto(
+            metaAddressString: metaAddress
+        )
+
+        return SettlementDestination(
+            address: result.stealthAddress,
+            ephemeralKey: result.ephemeralPublicKey,
+            ciphertext: result.mlkemCiphertext,
+            viewTag: result.viewTag
+        )
     }
 
     // MARK: - Rent Reclamation
 
     /// Reclaim rent from CiphertextAccount PDAs after settlement
+    /// Note: This is a stub - rent reclamation requires the on-chain Stealth-PQ program
     public func reclaimRent(for payment: PendingPayment) async throws -> String {
         guard payment.status == .settled else {
             throw SettlementError.paymentNotSettled
@@ -301,24 +437,15 @@ public class SettlementService: ObservableObject {
             throw SettlementError.noRentToReclaim
         }
 
-        // Derive PDA address
-        let stealthPubkey = try SolanaRPCClient.decodePublicKey(payment.stealthAddress)
-        let (pdaAddress, _) = try StealthPQClient.deriveCiphertextPDA(
-            stealthPubkey: stealthPubkey,
-            programId: STEALTH_PQ_PROGRAM_ID
-        )
-
-        // Check if PDA still exists
-        let accountInfo = try await rpcClient.getAccountInfo(pubkey: pdaAddress)
-        guard accountInfo != nil else {
-            throw SettlementError.pdaNotFound
-        }
-
-        // Build reclaim_rent instruction
-        // TODO: Implement actual reclaim transaction
+        // TODO: Implement actual rent reclamation when Stealth-PQ program is deployed
+        // This requires:
+        // 1. Deriving the CiphertextAccount PDA
+        // 2. Checking if PDA still exists
+        // 3. Building and signing reclaim_rent instruction
+        // 4. Submitting transaction
 
         throw SettlementError.notImplemented(
-            "Rent reclamation requires transaction signing"
+            "Rent reclamation requires Stealth-PQ program deployment"
         )
     }
 }

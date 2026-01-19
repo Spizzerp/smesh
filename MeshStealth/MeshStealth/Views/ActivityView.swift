@@ -216,9 +216,15 @@ struct TerminalActivityCard: View {
     let childActivities: [ActivityItem]
     let isExpanded: Bool
     let onToggleExpand: () -> Void
+    var onRetrySettlement: (() -> Void)? = nil
 
     private var hasChildren: Bool {
         !childActivities.isEmpty
+    }
+
+    /// Check if this is a mesh receive activity that can be retried
+    private var canRetry: Bool {
+        activity.type == .meshReceive && activity.status == .failed
     }
 
     var body: some View {
@@ -249,25 +255,14 @@ struct TerminalActivityCard: View {
                             .font(TerminalTypography.label())
                             .foregroundColor(TerminalPalette.textMuted)
 
-                        if activity.status == .pending {
-                            Text("[PENDING]")
-                                .font(TerminalTypography.label())
-                                .foregroundColor(TerminalPalette.warning)
-                        } else if activity.status == .inProgress {
-                            Text("[IN_PROGRESS]")
-                                .font(TerminalTypography.label())
-                                .foregroundColor(TerminalPalette.cyan)
-                        } else if activity.status == .failed {
-                            Text("[FAILED]")
-                                .font(TerminalTypography.label())
-                                .foregroundColor(TerminalPalette.error)
-                        }
+                        // Status badges
+                        statusBadge
                     }
                 }
 
                 Spacer()
 
-                // Amount
+                // Amount and retry button
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(formattedAmount)
                         .font(TerminalTypography.body(12))
@@ -278,6 +273,16 @@ struct TerminalActivityCard: View {
                         Text("\(sig.prefix(6))...")
                             .font(TerminalTypography.label())
                             .foregroundColor(TerminalPalette.textMuted)
+                    }
+
+                    // Retry button for failed mesh receives
+                    if canRetry, let onRetry = onRetrySettlement {
+                        Button(action: onRetry) {
+                            Text("[RETRY]")
+                                .font(TerminalTypography.label())
+                                .foregroundColor(TerminalPalette.cyan)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
 
@@ -335,6 +340,47 @@ struct TerminalActivityCard: View {
         case .meshReceive: return "[←]"
         case .hop: return "[~]"
         case .airdrop: return "[+]"
+        }
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        switch activity.status {
+        case .pending:
+            Text("[PENDING]")
+                .font(TerminalTypography.label())
+                .foregroundColor(TerminalPalette.warning)
+        case .inProgress:
+            // Show settling status for mesh receives
+            if activity.type == .meshReceive {
+                Text("[SETTLING]")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.cyan)
+            } else {
+                Text("[IN_PROGRESS]")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.cyan)
+            }
+        case .failed:
+            // Show retry time if available
+            if let nextRetry = activity.nextRetryAt {
+                let remaining = Int(max(0, nextRetry.timeIntervalSince(Date())))
+                if remaining < 60 {
+                    Text("[RETRY:\(remaining)s]")
+                        .font(TerminalTypography.label())
+                        .foregroundColor(TerminalPalette.error)
+                } else {
+                    Text("[RETRY:\(remaining / 60)m]")
+                        .font(TerminalTypography.label())
+                        .foregroundColor(TerminalPalette.error)
+                }
+            } else {
+                Text("[FAILED]")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.error)
+            }
+        case .completed:
+            EmptyView()
         }
     }
 
@@ -514,32 +560,38 @@ struct TerminalActivityFilterBar: View {
     @Binding var showPendingOnly: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            // Type filters
-            ForEach(ActivityTypeFilter.allCases, id: \.self) { filter in
+        VStack(spacing: 12) {
+            // Pending toggle (top row, right aligned)
+            HStack {
+                Spacer()
+
                 TerminalFilterChip(
-                    label: filter.terminalLabel,
-                    title: filter.rawValue,
-                    isSelected: selectedFilter == filter
+                    label: "[!]",
+                    title: showPendingOnly ? "PENDING" : "SHOW_PENDING",
+                    isSelected: showPendingOnly,
+                    accent: TerminalPalette.warning
                 ) {
                     withAnimation(.easeInOut(duration: 0.2)) {
-                        selectedFilter = filter
+                        showPendingOnly.toggle()
                     }
                 }
             }
 
-            Spacer()
-
-            // Pending toggle
-            TerminalFilterChip(
-                label: "[!]",
-                title: "PENDING",
-                isSelected: showPendingOnly,
-                accent: TerminalPalette.warning
-            ) {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showPendingOnly.toggle()
+            // Type filters (bottom row)
+            HStack(spacing: 8) {
+                ForEach(ActivityTypeFilter.allCases, id: \.self) { filter in
+                    TerminalFilterChip(
+                        label: filter.terminalLabel,
+                        title: filter.rawValue,
+                        isSelected: selectedFilter == filter
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            selectedFilter = filter
+                        }
+                    }
                 }
+
+                Spacer()
             }
         }
         .padding(.horizontal, 16)

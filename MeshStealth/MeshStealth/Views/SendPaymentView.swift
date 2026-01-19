@@ -17,117 +17,173 @@ struct SendPaymentSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                // Recipient section
-                Section {
-                    HStack {
-                        Image(systemName: "person.circle.fill")
-                            .font(.title)
-                            .foregroundColor(.blue)
+            ZStack {
+                TerminalPalette.background
+                    .ignoresSafeArea()
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(peer.name ?? "Unknown Device")
-                                .font(.headline)
-                            Text(truncatedAddress)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                ScanlineOverlay()
+                    .ignoresSafeArea()
+
+                ScrollView {
+                    VStack(spacing: 16) {
+                        // Recipient section
+                        TerminalPaymentSection(title: "[RECIPIENT]", accent: TerminalPalette.cyan) {
+                            HStack(spacing: 12) {
+                                Text("[>]")
+                                    .font(TerminalTypography.body())
+                                    .foregroundColor(TerminalPalette.cyan)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(peer.name?.uppercased() ?? "UNKNOWN_DEVICE")
+                                        .font(TerminalTypography.body(12))
+                                        .foregroundColor(TerminalPalette.textPrimary)
+                                    Text(truncatedAddress)
+                                        .font(TerminalTypography.label())
+                                        .foregroundColor(TerminalPalette.textDim)
+                                }
+
+                                Spacer()
+
+                                if isHybrid {
+                                    Text("[PQ]")
+                                        .font(TerminalTypography.label())
+                                        .foregroundColor(TerminalPalette.purple)
+                                        .terminalGlow(TerminalPalette.purple, radius: 2)
+                                }
+                            }
                         }
 
-                        Spacer()
+                        // Amount section
+                        TerminalPaymentSection(title: "[AMOUNT]", accent: TerminalPalette.cyan) {
+                            VStack(spacing: 12) {
+                                // Amount input
+                                HStack(spacing: 8) {
+                                    Text(">")
+                                        .font(TerminalTypography.body())
+                                        .foregroundColor(TerminalPalette.cyan)
 
-                        if isHybrid {
-                            Label("PQ", systemImage: "lock.shield.fill")
-                                .font(.caption)
-                                .foregroundColor(.purple)
+                                    TextField("0.0", text: $amountString)
+                                        .keyboardType(.decimalPad)
+                                        .font(TerminalTypography.balance(28))
+                                        .foregroundColor(TerminalPalette.textPrimary)
+                                        .multilineTextAlignment(.trailing)
+
+                                    Text("SOL")
+                                        .font(TerminalTypography.label())
+                                        .foregroundColor(TerminalPalette.textDim)
+                                }
+                                .padding(12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(TerminalPalette.surfaceLight)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 2)
+                                                .stroke(TerminalPalette.border, lineWidth: 1)
+                                        )
+                                )
+
+                                // Quick amount buttons
+                                HStack(spacing: 12) {
+                                    TerminalQuickAmountButton(amount: "0.01", selected: amountString) {
+                                        amountString = "0.01"
+                                        dismissKeyboard()
+                                    }
+                                    TerminalQuickAmountButton(amount: "0.1", selected: amountString) {
+                                        amountString = "0.1"
+                                        dismissKeyboard()
+                                    }
+                                    TerminalQuickAmountButton(amount: "1.0", selected: amountString) {
+                                        amountString = "1.0"
+                                        dismissKeyboard()
+                                    }
+                                }
+                            }
                         }
+
+                        // Memo section
+                        TerminalPaymentSection(title: "[MEMO]", accent: TerminalPalette.textDim) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    Text(">")
+                                        .font(TerminalTypography.body())
+                                        .foregroundColor(TerminalPalette.textMuted)
+
+                                    TextField("optional_message", text: $memo)
+                                        .font(TerminalTypography.body(12))
+                                        .foregroundColor(TerminalPalette.textPrimary)
+                                }
+
+                                Text("// visible to recipient")
+                                    .font(TerminalTypography.label())
+                                    .foregroundColor(TerminalPalette.textMuted)
+                            }
+                        }
+
+                        // Info section
+                        TerminalPaymentSection(title: "[TX_INFO]", accent: TerminalPalette.textDim) {
+                            VStack(spacing: 6) {
+                                terminalInfoRow("NETWORK", "[DEVNET]", TerminalPalette.warning)
+                                terminalInfoRow("DELIVERY", "BLE_MESH", TerminalPalette.textDim)
+                                if isHybrid {
+                                    terminalInfoRow("SECURITY", "[PQ:MLKEM768]", TerminalPalette.purple)
+                                }
+                            }
+                        }
+
+                        // Send button
+                        TerminalPrimaryButton(
+                            title: "SEND_PAYMENT",
+                            accent: .public,
+                            isLoading: isSending
+                        ) {
+                            sendPayment()
+                        }
+                        .disabled(!canSend)
+                        .opacity(canSend ? 1.0 : 0.5)
+                        .padding(.top, 8)
                     }
-                } header: {
-                    Text("Recipient")
+                    .padding(.horizontal, 16)
+                    .padding(.top, 20)
+                    .padding(.bottom, 16)
                 }
-
-                // Amount section
-                Section {
-                    HStack {
-                        TextField("0.0", text: $amountString)
-                            .keyboardType(.decimalPad)
-                            .font(.system(size: 36, weight: .bold, design: .rounded))
-
-                        Text("SOL")
-                            .font(.title2)
-                            .foregroundColor(.secondary)
-                    }
-
-                    // Quick amount buttons
-                    HStack(spacing: 12) {
-                        QuickAmountButton(amount: "0.01", selected: amountString) {
-                            amountString = "0.01"
-                        }
-                        QuickAmountButton(amount: "0.1", selected: amountString) {
-                            amountString = "0.1"
-                        }
-                        QuickAmountButton(amount: "1.0", selected: amountString) {
-                            amountString = "1.0"
-                        }
-                    }
-                } header: {
-                    Text("Amount")
-                }
-
-                // Memo section
-                Section {
-                    TextField("Optional message", text: $memo)
-                } header: {
-                    Text("Memo")
-                } footer: {
-                    Text("This message will be visible to the recipient")
-                }
-
-                // Info section
-                Section {
-                    HStack {
-                        Text("Network")
-                        Spacer()
-                        Text("Devnet")
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Delivery")
-                        Spacer()
-                        Text("Via BLE Mesh")
-                            .foregroundColor(.secondary)
-                    }
-
-                    if isHybrid {
-                        HStack {
-                            Text("Security")
-                            Spacer()
-                            Text("Post-Quantum (MLKEM)")
-                                .foregroundColor(.purple)
-                        }
-                    }
+                .scrollDismissesKeyboard(.immediately)
+                .onTapGesture {
+                    dismissKeyboard()
                 }
             }
-            .navigationTitle("Send Payment")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(TerminalPalette.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
                         dismiss()
+                    } label: {
+                        Text("[CANCEL]")
+                            .font(TerminalTypography.label())
+                            .foregroundColor(TerminalPalette.textDim)
                     }
                 }
-
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Send") {
+                ToolbarItem(placement: .principal) {
+                    Text("// SEND_PAYMENT")
+                        .font(TerminalTypography.header(12))
+                        .foregroundColor(TerminalPalette.cyan)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
                         sendPayment()
+                    } label: {
+                        Text("[EXEC]")
+                            .font(TerminalTypography.label())
+                            .foregroundColor(canSend ? TerminalPalette.cyan : TerminalPalette.textMuted)
                     }
                     .disabled(!canSend)
-                    .fontWeight(.semibold)
                 }
             }
             .overlay {
                 if isSending {
-                    SendingOverlay()
+                    TerminalSendingOverlay()
                 }
             }
             .alert("Payment Sent!", isPresented: $sendSuccess) {
@@ -166,6 +222,9 @@ struct SendPaymentSheet: View {
     private func sendPayment() {
         guard canSend else { return }
 
+        // Dismiss keyboard before sending
+        dismissKeyboard()
+
         isSending = true
 
         Task {
@@ -182,62 +241,132 @@ struct SendPaymentSheet: View {
             isSending = false
         }
     }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
+    private func terminalInfoRow(_ label: String, _ value: String, _ color: Color) -> some View {
+        HStack {
+            Text("> \(label)")
+                .font(TerminalTypography.body(12))
+                .foregroundColor(TerminalPalette.textPrimary)
+            Spacer()
+            Text(value)
+                .font(TerminalTypography.label())
+                .foregroundColor(color)
+        }
+    }
 }
 
-struct QuickAmountButton: View {
-    let amount: String
-    let selected: String
-    let action: () -> Void
+// MARK: - Terminal Payment Section
+
+struct TerminalPaymentSection<Content: View>: View {
+    let title: String
+    let accent: Color
+    @ViewBuilder let content: () -> Content
 
     var body: some View {
-        Button(action: action) {
-            Text(amount)
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .foregroundColor(amount == selected ? .white : .blue)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(TerminalTypography.header(12))
+                .foregroundColor(accent)
+                .padding(.bottom, 8)
+
+            content()
+                .padding(12)
                 .background(
-                    Capsule()
-                        .fill(amount == selected ? Color.blue : Color.blue.opacity(0.1))
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(TerminalPalette.surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 2)
+                                .stroke(TerminalPalette.border, lineWidth: 1)
+                        )
                 )
         }
     }
 }
 
-struct SendingOverlay: View {
+// MARK: - Terminal Quick Amount Button
+
+struct TerminalQuickAmountButton: View {
+    let amount: String
+    let selected: String
+    let action: () -> Void
+
+    var isSelected: Bool { amount == selected }
+
+    var body: some View {
+        Button(action: action) {
+            Text("[\(amount)]")
+                .font(TerminalTypography.label())
+                .foregroundColor(isSelected ? TerminalPalette.cyan : TerminalPalette.textDim)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(isSelected ? TerminalPalette.surfaceLight : Color.clear)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 2)
+                                .stroke(isSelected ? TerminalPalette.cyan : TerminalPalette.border, lineWidth: 1)
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Terminal Sending Overlay
+
+struct TerminalSendingOverlay: View {
     var body: some View {
         ZStack {
-            Color.black.opacity(0.4)
+            TerminalPalette.background.opacity(0.95)
                 .ignoresSafeArea()
 
             VStack(spacing: 16) {
-                ProgressView()
-                    .scaleEffect(1.5)
-                Text("Broadcasting to mesh...")
-                    .font(.headline)
-                    .foregroundColor(.white)
+                Text("[~~~]")
+                    .font(TerminalTypography.balance(24))
+                    .foregroundColor(TerminalPalette.cyan)
+                    .terminalGlow(TerminalPalette.cyan, radius: 4)
+
+                HStack(spacing: 8) {
+                    TerminalSpinner(color: TerminalPalette.cyan)
+                    Text("BROADCASTING_TO_MESH...")
+                        .font(TerminalTypography.body(12))
+                        .foregroundColor(TerminalPalette.textPrimary)
+                }
             }
             .padding(32)
             .background(
-                RoundedRectangle(cornerRadius: 20)
-                    .fill(Color(.systemBackground))
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(TerminalPalette.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 2)
+                            .stroke(TerminalPalette.cyan, lineWidth: 1)
+                    )
             )
         }
     }
 }
 
 #Preview {
-    SendPaymentSheet(
-        peer: NearbyPeer(
-            id: "test",
-            name: "Alice's iPhone",
-            rssi: -45,
-            isConnected: true,
-            lastSeenAt: Date(),
-            supportsHybrid: true
-        ),
-        metaAddress: "abc123def456abc123def456abc123def456",
-        isHybrid: true
-    )
+    ZStack {
+        TerminalPalette.background
+            .ignoresSafeArea()
+        ScanlineOverlay()
+            .ignoresSafeArea()
+        SendPaymentSheet(
+            peer: NearbyPeer(
+                id: "test",
+                name: "Alice's iPhone",
+                rssi: -45,
+                isConnected: true,
+                lastSeenAt: Date(),
+                supportsHybrid: true
+            ),
+            metaAddress: "abc123def456abc123def456abc123def456",
+            isHybrid: true
+        )
+    }
 }

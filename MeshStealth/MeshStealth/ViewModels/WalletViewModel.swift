@@ -39,6 +39,11 @@ class WalletViewModel: ObservableObject {
     @Published var mixError: String?
     @Published var lastMixResult: MixResult?
 
+    // Settlement State
+    @Published var isSettling = false
+    @Published var settlementProgress: SettlementProgress?
+    @Published var lastSettlementResult: SettlementResult?
+
     /// Current network (for UI display)
     let network: SolanaNetwork = .devnet
 
@@ -299,6 +304,60 @@ class WalletViewModel: ObservableObject {
         try await walletManager.importWallet(mnemonic: mnemonic)
         // Refresh the main wallet address after import
         mainWalletAddress = await walletManager.mainWalletAddress
+    }
+
+    // MARK: - Settlement
+
+    /// Get pending payments needing settlement
+    var paymentsNeedingSettlement: [PendingPayment] {
+        pendingPayments.filter { payment in
+            !payment.isShielded && (payment.status == .received || payment.status == .failed)
+        }
+    }
+
+    /// Format next retry time for a payment
+    func formatNextRetryTime(_ payment: PendingPayment) -> String? {
+        guard let nextRetry = payment.nextRetryAt else { return nil }
+
+        if nextRetry <= Date() {
+            return "RETRY_NOW"
+        }
+
+        let seconds = Int(nextRetry.timeIntervalSince(Date()))
+        if seconds < 60 {
+            return "RETRY:\(seconds)s"
+        } else {
+            let minutes = seconds / 60
+            return "RETRY:\(minutes)m"
+        }
+    }
+}
+
+// MARK: - Settlement Progress
+
+/// Progress of settlement operation
+public struct SettlementProgress {
+    public let total: Int
+    public let completed: Int
+    public let currentPaymentId: UUID?
+    public let status: String
+
+    public init(
+        total: Int,
+        completed: Int,
+        currentPaymentId: UUID? = nil,
+        status: String
+    ) {
+        self.total = total
+        self.completed = completed
+        self.currentPaymentId = currentPaymentId
+        self.status = status
+    }
+
+    /// Progress percentage (0-1)
+    public var progress: Double {
+        guard total > 0 else { return 0 }
+        return Double(completed) / Double(total)
     }
 }
 

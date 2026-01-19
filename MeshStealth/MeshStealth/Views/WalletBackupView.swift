@@ -12,63 +12,111 @@ struct WalletBackupView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Warning header
-                    WarningHeader()
+            ZStack {
+                TerminalPalette.background
+                    .ignoresSafeArea()
 
-                    if isLoading {
-                        ProgressView()
-                            .padding(.vertical, 40)
-                    } else if showPhrase, let phrase = mnemonic {
-                        // Seed phrase grid
-                        SeedPhraseGrid(words: phrase)
+                ScanlineOverlay()
+                    .ignoresSafeArea()
 
-                        // Copy button
-                        Button {
-                            UIPasteboard.general.string = phrase.joined(separator: " ")
-                            copiedConfirmation = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                copiedConfirmation = false
+                ScrollView {
+                    VStack(spacing: 20) {
+                        // Warning header
+                        TerminalWarningHeader()
+
+                        if isLoading {
+                            VStack(spacing: 12) {
+                                TerminalSpinner(color: TerminalPalette.cyan)
+                                Text("LOADING...")
+                                    .font(TerminalTypography.body(12))
+                                    .foregroundColor(TerminalPalette.textDim)
                             }
-                        } label: {
-                            Label(
-                                copiedConfirmation ? "Copied!" : "Copy to Clipboard",
-                                systemImage: copiedConfirmation ? "checkmark" : "doc.on.doc"
-                            )
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .padding(.horizontal)
+                            .padding(.vertical, 40)
+                        } else if showPhrase, let phrase = mnemonic {
+                            // Seed phrase grid
+                            TerminalSeedPhraseGrid(words: phrase)
 
-                        // Security reminder
-                        SecurityReminder()
-                    } else if mnemonic != nil {
-                        // Reveal button
-                        Button {
-                            withAnimation { showPhrase = true }
-                        } label: {
-                            Label("Reveal Recovery Phrase", systemImage: "eye")
+                            // Copy button
+                            Button {
+                                UIPasteboard.general.string = phrase.joined(separator: " ")
+                                copiedConfirmation = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    copiedConfirmation = false
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text(copiedConfirmation ? "[OK]" : "[>]")
+                                    Text(copiedConfirmation ? "COPIED" : "COPY_TO_CLIPBOARD")
+                                }
+                                .font(TerminalTypography.header(14))
+                                .foregroundColor(copiedConfirmation ? TerminalPalette.success : TerminalPalette.cyan)
                                 .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .padding(.horizontal)
-                    } else {
-                        // No mnemonic available
-                        NoMnemonicView()
-                    }
+                                .padding(.vertical, 12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(TerminalPalette.surface)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 2)
+                                                .stroke(copiedConfirmation ? TerminalPalette.success : TerminalAccent.public.dimColor, lineWidth: 1)
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 16)
 
-                    Spacer(minLength: 40)
+                            // Security reminder
+                            TerminalSecurityReminder()
+                        } else if mnemonic != nil {
+                            // Reveal button
+                            Button {
+                                withAnimation { showPhrase = true }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text("[!]")
+                                    Text("REVEAL_RECOVERY_PHRASE")
+                                }
+                                .font(TerminalTypography.header(14))
+                                .foregroundColor(TerminalPalette.warning)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(TerminalPalette.warning.opacity(0.15))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 2)
+                                                .stroke(TerminalPalette.warning, lineWidth: 1)
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 16)
+                        } else {
+                            // No mnemonic available
+                            TerminalNoMnemonicView()
+                        }
+
+                        Spacer(minLength: 40)
+                    }
+                    .padding(.top, 20)
                 }
-                .padding(.vertical)
             }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("Backup Wallet")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(TerminalPalette.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
+                ToolbarItem(placement: .topBarLeading) {
+                    Text("[MAIN_ADDR_BACKUP]")
+                        .font(TerminalTypography.header(12))
+                        .foregroundColor(TerminalPalette.cyan)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
                         dismiss()
+                    } label: {
+                        Text("[CLOSE]")
+                            .font(TerminalTypography.label())
+                            .foregroundColor(TerminalPalette.textDim)
                     }
                 }
             }
@@ -84,124 +132,209 @@ struct WalletBackupView: View {
     }
 }
 
-// MARK: - Components
+// MARK: - Terminal Warning Header
 
-struct WarningHeader: View {
+struct TerminalWarningHeader: View {
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 48))
-                .foregroundColor(.orange)
+        VStack(spacing: 16) {
+            // ASCII art warning
+            VStack(spacing: 2) {
+                Text("┌─────────────────────┐")
+                Text("│      [!] [!] [!]    │")
+                Text("│       WARNING       │")
+                Text("└─────────────────────┘")
+            }
+            .font(TerminalTypography.body(14))
+            .foregroundColor(TerminalPalette.warning)
+            .terminalGlow(TerminalPalette.warning, radius: 4)
 
-            Text("Backup Your Recovery Phrase")
-                .font(.title2.bold())
+            VStack(spacing: 8) {
+                Text("BACKUP_RECOVERY_PHRASE")
+                    .font(TerminalTypography.header())
+                    .foregroundColor(TerminalPalette.textPrimary)
 
-            Text("Write these words down and store them safely. Anyone with this phrase can access your funds.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
+                Text("// Write these words down and store safely")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textMuted)
+
+                Text("// Anyone with this phrase can access funds")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.error)
+            }
         }
-        .padding()
+        .padding(16)
     }
 }
 
-struct SeedPhraseGrid: View {
+// MARK: - Terminal Seed Phrase Grid
+
+struct TerminalSeedPhraseGrid: View {
     let words: [String]
 
     var body: some View {
-        LazyVGrid(columns: [
-            GridItem(.flexible()),
-            GridItem(.flexible()),
-            GridItem(.flexible())
-        ], spacing: 12) {
-            ForEach(Array(words.enumerated()), id: \.offset) { index, word in
-                HStack {
-                    Text("\(index + 1).")
-                        .foregroundColor(.secondary)
-                        .font(.caption)
-                        .frame(width: 20, alignment: .trailing)
-                    Text(word)
-                        .fontWeight(.medium)
-                        .font(.subheadline)
-                    Spacer()
+        VStack(alignment: .leading, spacing: 0) {
+            // Title bar
+            HStack(spacing: 8) {
+                HStack(spacing: 4) {
+                    Text("[-]")
+                    Text("[+]")
+                    Text("[x]")
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 10)
-                .background(Color(.systemBackground))
-                .cornerRadius(8)
+                .font(TerminalTypography.label(10))
+                .foregroundColor(TerminalPalette.textMuted)
+
+                Text("[SEED_PHRASE]")
+                    .font(TerminalTypography.header(12))
+                    .foregroundColor(TerminalPalette.warning)
+
+                Spacer()
+
+                Text("[\(words.count)_WORDS]")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textDim)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(TerminalPalette.surface)
+            .overlay(
+                Rectangle()
+                    .fill(Color(hex: "553300"))
+                    .frame(height: 1),
+                alignment: .bottom
+            )
+
+            // Word grid
+            LazyVGrid(columns: [
+                GridItem(.flexible()),
+                GridItem(.flexible()),
+                GridItem(.flexible())
+            ], spacing: 8) {
+                ForEach(Array(words.enumerated()), id: \.offset) { index, word in
+                    HStack(spacing: 6) {
+                        Text(String(format: "%02d", index + 1))
+                            .font(TerminalTypography.label())
+                            .foregroundColor(TerminalPalette.textMuted)
+                            .frame(width: 20, alignment: .trailing)
+
+                        Text(word.uppercased())
+                            .font(TerminalTypography.body(11))
+                            .foregroundColor(TerminalPalette.textPrimary)
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(TerminalPalette.surfaceLight)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 2)
+                                    .stroke(TerminalPalette.border, lineWidth: 1)
+                            )
+                    )
+                }
+            }
+            .padding(12)
         }
-        .padding()
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.systemBackground))
-                .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
+            RoundedRectangle(cornerRadius: 2)
+                .fill(TerminalPalette.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2)
+                        .stroke(Color(hex: "553300"), lineWidth: 1)
+                )
         )
-        .padding(.horizontal)
+        .padding(.horizontal, 16)
     }
 }
 
-struct SecurityReminder: View {
+// MARK: - Terminal Security Reminder
+
+struct TerminalSecurityReminder: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Image(systemName: "lock.shield")
-                    .foregroundColor(.orange)
-                    .frame(width: 24)
-                Text("Never share your recovery phrase")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            HStack(spacing: 12) {
-                Image(systemName: "doc.text")
-                    .foregroundColor(.orange)
-                    .frame(width: 24)
-                Text("Write it on paper, don't store digitally")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            HStack(spacing: 12) {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundColor(.orange)
-                    .frame(width: 24)
-                Text("If lost, your funds cannot be recovered")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("> SECURITY_NOTES:")
+                .font(TerminalTypography.body(12))
+                .foregroundColor(TerminalPalette.warning)
+
+            VStack(alignment: .leading, spacing: 6) {
+                securityRow("01", "Never share your recovery phrase")
+                securityRow("02", "Write on paper, avoid digital storage")
+                securityRow("03", "If lost, funds cannot be recovered")
             }
         }
-        .padding()
+        .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.orange.opacity(0.1))
+            RoundedRectangle(cornerRadius: 2)
+                .fill(TerminalPalette.warning.opacity(0.1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2)
+                        .stroke(Color(hex: "553300"), lineWidth: 1)
+                )
         )
-        .padding(.horizontal)
+        .padding(.horizontal, 16)
+    }
+
+    private func securityRow(_ number: String, _ text: String) -> some View {
+        HStack(spacing: 8) {
+            Text("[\(number)]")
+                .font(TerminalTypography.label())
+                .foregroundColor(TerminalPalette.textMuted)
+            Text(text)
+                .font(TerminalTypography.label())
+                .foregroundColor(TerminalPalette.textDim)
+        }
     }
 }
 
-struct NoMnemonicView: View {
+// MARK: - Terminal No Mnemonic View
+
+struct TerminalNoMnemonicView: View {
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "key.slash")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary)
+        VStack(spacing: 20) {
+            // ASCII art
+            VStack(spacing: 2) {
+                Text("┌─────────────────────┐")
+                Text("│       [X]           │")
+                Text("│    NO_PHRASE        │")
+                Text("└─────────────────────┘")
+            }
+            .font(TerminalTypography.body(14))
+            .foregroundColor(TerminalPalette.textMuted)
 
-            Text("No Recovery Phrase Available")
-                .font(.headline)
+            VStack(spacing: 8) {
+                Text("NO_RECOVERY_PHRASE")
+                    .font(TerminalTypography.header())
+                    .foregroundColor(TerminalPalette.textDim)
 
-            Text("This wallet was imported from a private key without a recovery phrase. You cannot back it up using a seed phrase.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
+                Text("// Wallet imported from private key")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textMuted)
+
+                Text("// Cannot backup via seed phrase")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textMuted)
+            }
         }
-        .padding()
+        .padding(20)
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.systemGray6))
+            RoundedRectangle(cornerRadius: 2)
+                .fill(TerminalPalette.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2)
+                        .stroke(TerminalPalette.border, lineWidth: 1)
+                )
         )
-        .padding(.horizontal)
+        .padding(.horizontal, 16)
     }
 }
 
 #Preview {
-    WalletBackupView()
+    ZStack {
+        TerminalPalette.background
+            .ignoresSafeArea()
+        ScanlineOverlay()
+            .ignoresSafeArea()
+        WalletBackupView()
+    }
 }

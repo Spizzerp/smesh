@@ -74,7 +74,7 @@ public class MeshNetworkManager: ObservableObject {
         self.settlementService = SettlementService(
             walletManager: self.walletManager,
             networkMonitor: self.networkMonitor,
-            rpcClient: self.rpcClient
+            rpcClient: self.faucet
         )
 
         setupBindings()
@@ -468,6 +468,13 @@ public class MeshNetworkManager: ObservableObject {
     /// Manually trigger settlement of all pending payments
     public func settlePendingPayments() async {
         await settlementService.settleAllPending()
+    }
+
+    /// Retry settlement for a specific payment
+    /// - Parameter payment: The payment to retry
+    /// - Returns: Settlement result
+    public func retrySettlement(payment: PendingPayment) async -> SettlementResult {
+        await settlementService.settlePayment(payment)
     }
 
     // MARK: - Helpers

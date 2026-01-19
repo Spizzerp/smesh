@@ -110,6 +110,9 @@ public struct ActivityItem: Codable, Sendable, Identifiable {
     // For linking hops to parent shield/unshield
     public let parentActivityId: UUID?
 
+    // For settlement retry scheduling
+    public var nextRetryAt: Date?
+
     public init(
         id: UUID = UUID(),
         type: ActivityType,
@@ -121,7 +124,8 @@ public struct ActivityItem: Codable, Sendable, Identifiable {
         hopCount: Int? = nil,
         errorMessage: String? = nil,
         peerName: String? = nil,
-        parentActivityId: UUID? = nil
+        parentActivityId: UUID? = nil,
+        nextRetryAt: Date? = nil
     ) {
         self.id = id
         self.type = type
@@ -134,6 +138,7 @@ public struct ActivityItem: Codable, Sendable, Identifiable {
         self.errorMessage = errorMessage
         self.peerName = peerName
         self.parentActivityId = parentActivityId
+        self.nextRetryAt = nextRetryAt
     }
 
     /// Amount in SOL
@@ -187,6 +192,9 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
     /// Last settlement attempt timestamp
     public var lastAttemptAt: Date?
 
+    /// Next retry time (for exponential backoff)
+    public var nextRetryAt: Date?
+
     /// Settlement transaction signature (when settled)
     public var settlementSignature: String?
 
@@ -218,12 +226,13 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         ephemeralPublicKey: Data,
         mlkemCiphertext: Data?,
         amount: UInt64,
-        tokenMint: String?,
-        viewTag: UInt8,
+        tokenMint: String? = nil,
+        viewTag: UInt8 = 0,
         receivedAt: Date = Date(),
         status: PendingPaymentStatus = .received,
         settlementAttempts: Int = 0,
         lastAttemptAt: Date? = nil,
+        nextRetryAt: Date? = nil,
         settlementSignature: String? = nil,
         errorMessage: String? = nil,
         isShielded: Bool = false,
@@ -244,6 +253,7 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         self.status = status
         self.settlementAttempts = settlementAttempts
         self.lastAttemptAt = lastAttemptAt
+        self.nextRetryAt = nextRetryAt
         self.settlementSignature = settlementSignature
         self.errorMessage = errorMessage
         self.isShielded = isShielded
@@ -267,6 +277,7 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         self.status = .received
         self.settlementAttempts = 0
         self.lastAttemptAt = nil
+        self.nextRetryAt = nil
         self.settlementSignature = nil
         self.errorMessage = nil
         self.isShielded = false  // Mesh payments are not shielded
@@ -508,6 +519,30 @@ public class StealthWalletManager: ObservableObject {
             settledPayments.insert(settled, at: 0)
             saveSettledPayments()
             settledPaymentSubject.send(settled)
+        }
+
+        savePendingPayments()
+        updatePendingBalance()
+    }
+
+    /// Update payment status with next retry time (for exponential backoff)
+    public func updatePaymentStatusWithRetry(
+        id: UUID,
+        status: PendingPaymentStatus,
+        error: String? = nil,
+        nextRetryAt: Date?
+    ) {
+        guard let index = pendingPayments.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        pendingPayments[index].status = status
+        pendingPayments[index].settlementAttempts += 1
+        pendingPayments[index].lastAttemptAt = Date()
+        pendingPayments[index].nextRetryAt = nextRetryAt
+
+        if let err = error {
+            pendingPayments[index].errorMessage = err
         }
 
         savePendingPayments()
@@ -845,7 +880,8 @@ public class StealthWalletManager: ObservableObject {
         id: UUID,
         status: ActivityStatus,
         signature: String? = nil,
-        error: String? = nil
+        error: String? = nil,
+        nextRetryAt: Date? = nil
     ) {
         guard let index = activityItems.firstIndex(where: { $0.id == id }) else {
             return
@@ -860,6 +896,8 @@ public class StealthWalletManager: ObservableObject {
         if let err = error {
             activityItems[index].errorMessage = err
         }
+
+        activityItems[index].nextRetryAt = nextRetryAt
 
         saveActivityItems()
     }
@@ -883,7 +921,8 @@ public class StealthWalletManager: ObservableObject {
             hopCount: current.hopCount,
             errorMessage: current.errorMessage,
             peerName: current.peerName,
-            parentActivityId: current.parentActivityId
+            parentActivityId: current.parentActivityId,
+            nextRetryAt: current.nextRetryAt
         )
 
         saveActivityItems()
