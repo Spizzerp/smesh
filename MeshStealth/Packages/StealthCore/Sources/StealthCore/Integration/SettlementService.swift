@@ -104,6 +104,9 @@ public class SettlementService: ObservableObject {
     private let config: SettlementConfiguration
     private let estimatedFee: UInt64 = 5000  // 0.000005 SOL per signature
 
+    /// Optional privacy routing service for enhanced privacy during settlement
+    public var privacyRoutingService: PrivacyRoutingService?
+
     // MARK: - Private
 
     private var cancellables = Set<AnyCancellable>()
@@ -316,6 +319,7 @@ public class SettlementService: ObservableObject {
 
     /// Build and submit a transfer from a stealth address
     /// Follows the same pattern as ShieldService
+    /// Optionally routes through privacy protocol for enhanced anonymity
     private func buildAndSubmitTransfer(
         from sourceAddress: String,
         to destinationAddress: String,
@@ -324,6 +328,34 @@ public class SettlementService: ObservableObject {
     ) async throws -> String {
         print("[SETTLE-TX] Building transfer from \(sourceAddress) to \(destinationAddress)")
         print("[SETTLE-TX] Amount: \(amount) lamports")
+
+        // Check if privacy routing should be used
+        if let privacyService = privacyRoutingService,
+           privacyService.shouldUsePrivacyRouting(for: amount) {
+            print("[SETTLE-TX] Using privacy routing via \(privacyService.selectedProtocol.displayName)")
+
+            do {
+                let txSignature = try await privacyService.routeTransfer(
+                    from: sourceAddress,
+                    to: destinationAddress,
+                    amount: amount,
+                    spendingKey: spendingKey
+                )
+                print("[SETTLE-TX] Privacy-routed transaction: \(txSignature)")
+                return txSignature
+            } catch {
+                // Check if fallback is enabled
+                if privacyService.configuration.fallbackToDirect {
+                    print("[SETTLE-TX] Privacy routing failed, falling back to direct: \(error)")
+                    // Continue with direct transfer below
+                } else {
+                    throw SettlementError.transactionFailed("Privacy routing failed: \(error.localizedDescription)")
+                }
+            }
+        }
+
+        // Direct transfer (no privacy routing)
+        print("[SETTLE-TX] Using direct transfer")
 
         // 1. Create wallet from spending key (raw scalar, not seed-expanded)
         let stealthWallet: SolanaWallet

@@ -90,8 +90,17 @@ public actor ShieldService {
     private let rpcClient: DevnetFaucet
     private let estimatedFee: UInt64 = 5000  // 0.000005 SOL per signature
 
+    /// Optional privacy routing service for enhanced shielding
+    /// When enabled, deposits into privacy pool first to hide amount
+    private var privacyRoutingService: PrivacyRoutingService?
+
     public init(rpcClient: DevnetFaucet = DevnetFaucet()) {
         self.rpcClient = rpcClient
+    }
+
+    /// Set the privacy routing service for enhanced shielding
+    public func setPrivacyRoutingService(_ service: PrivacyRoutingService?) {
+        self.privacyRoutingService = service
     }
 
     /// Shield funds from main wallet to a stealth address
@@ -196,6 +205,73 @@ public actor ShieldService {
         )
     }
 
+    /// Shield funds with privacy enhancement
+    /// Uses privacy protocol to hide the deposit amount (Bulletproof or ZK)
+    /// - Parameters:
+    ///   - lamports: Amount to shield in lamports
+    ///   - mainWallet: The main wallet to transfer from
+    ///   - stealthKeyPair: Our stealth keypair (to generate self-stealth address)
+    /// - Returns: ShieldResult with the generated stealth address and transaction details
+    public func shieldWithPrivacy(
+        lamports: UInt64,
+        mainWallet: SolanaWallet,
+        stealthKeyPair: StealthKeyPair
+    ) async throws -> ShieldResult {
+        guard let privacyService = privacyRoutingService,
+              await privacyService.shouldUsePrivacyRouting(for: lamports) else {
+            // Fallback to standard shielding if privacy not available
+            return try await shield(
+                lamports: lamports,
+                mainWallet: mainWallet,
+                stealthKeyPair: stealthKeyPair
+            )
+        }
+
+        print("[SHIELD-PRIVACY] Using privacy-enhanced shielding via \(await privacyService.selectedProtocol.displayName)")
+
+        // 1. Check balance
+        let mainAddress = await mainWallet.address
+        let balance = try await rpcClient.getBalance(address: mainAddress)
+        let requiredAmount = lamports + estimatedFee
+
+        guard balance >= requiredAmount else {
+            throw ShieldError.insufficientBalance(available: balance, required: requiredAmount)
+        }
+
+        // 2. Generate stealth address for ourselves
+        let metaAddress = stealthKeyPair.hybridMetaAddressString
+        let stealthResult: StealthAddressResult
+        do {
+            stealthResult = try StealthAddressGenerator.generateStealthAddressAuto(
+                metaAddressString: metaAddress
+            )
+        } catch {
+            throw ShieldError.stealthAddressGenerationFailed
+        }
+
+        // 3. Deposit into privacy pool first (hides amount)
+        print("[SHIELD-PRIVACY] Depositing \(lamports) lamports into privacy pool")
+        let depositResult = try await privacyService.deposit(amount: lamports)
+        print("[SHIELD-PRIVACY] Deposit complete: \(depositResult.signature)")
+
+        // 4. Withdraw to stealth address (unlinkable)
+        print("[SHIELD-PRIVACY] Withdrawing to stealth address \(stealthResult.stealthAddress)")
+        let withdrawResult = try await privacyService.withdraw(
+            amount: lamports,
+            destination: stealthResult.stealthAddress
+        )
+        print("[SHIELD-PRIVACY] Privacy-enhanced shield complete: \(withdrawResult.signature)")
+
+        return ShieldResult(
+            stealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey,
+            mlkemCiphertext: stealthResult.mlkemCiphertext,
+            amount: lamports,
+            signature: withdrawResult.signature,
+            viewTag: stealthResult.viewTag
+        )
+    }
+
     // MARK: - Unshield Operations
 
     /// Unshield funds from a stealth address back to main wallet
@@ -233,6 +309,53 @@ public actor ShieldService {
         guard stealthBalance >= transferAmount + estimatedFee else {
             throw ShieldError.insufficientBalance(available: stealthBalance, required: transferAmount + estimatedFee)
         }
+
+        // === PRIVACY POOL ROUTING ===
+        // If privacy routing is enabled, route through the privacy pool to break on-chain link
+        if let privacyService = privacyRoutingService,
+           await privacyService.shouldUsePrivacyRouting(for: transferAmount) {
+
+            print("[UNSHIELD] 🔒 Using privacy pool routing via \(await privacyService.selectedProtocol.displayName)")
+            print("[UNSHIELD] This will: stealth → pool → main (breaking on-chain link)")
+
+            do {
+                // Route through privacy pool: stealth → pool → main
+                let txSignature = try await privacyService.routeTransfer(
+                    from: payment.stealthAddress,
+                    to: mainWalletAddress,
+                    amount: transferAmount,
+                    spendingKey: spendingKey
+                )
+
+                print("[UNSHIELD] 🔒 Privacy-routed unshield complete: \(txSignature)")
+
+                return UnshieldResult(
+                    stealthAddress: payment.stealthAddress,
+                    amount: transferAmount,
+                    signature: txSignature,
+                    paymentId: payment.id
+                )
+            } catch {
+                // Check if fallback is allowed
+                let config = await privacyService.configuration
+                if config.fallbackToDirect {
+                    print("[UNSHIELD] ⚠️ Privacy routing failed, falling back to direct: \(error)")
+                    // Continue with direct transfer below
+                } else {
+                    print("[UNSHIELD] ❌ Privacy routing failed (no fallback): \(error)")
+                    throw ShieldError.transactionFailed("Privacy routing failed: \(error.localizedDescription)")
+                }
+            }
+        } else {
+            if privacyRoutingService != nil {
+                print("[UNSHIELD] Privacy routing available but not enabled for this amount")
+            } else {
+                print("[UNSHIELD] No privacy routing configured, using direct transfer")
+            }
+        }
+
+        // === DIRECT TRANSFER (fallback or default) ===
+        print("[UNSHIELD] Using direct transfer: stealth → main")
 
         // 3. Create wallet from spending key (raw scalar, not seed-expanded)
         // The spending key is a raw scalar derived as: p = m + hash(S) mod L

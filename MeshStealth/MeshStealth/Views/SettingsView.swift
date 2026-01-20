@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var showingClearActivityConfirmation = false
     @State private var showingMetaAddress = false
     @State private var showingBackupWallet = false
+    @State private var showingPrivacyInfo = false
 
     var body: some View {
         NavigationStack {
@@ -84,6 +85,78 @@ struct SettingsView: View {
                                 value: "[\(meshViewModel.peerCount)]",
                                 valueColor: TerminalPalette.cyan
                             )
+                        }
+
+                        // Privacy Protocol Section
+                        TerminalSettingsSection(title: "[PRIVACY_CONFIG]", accent: TerminalPalette.purple) {
+                            // Privacy toggle
+                            HStack {
+                                Text("> PRIVACY_ROUTING")
+                                    .font(TerminalTypography.body(12))
+                                    .foregroundColor(TerminalPalette.textPrimary)
+
+                                Spacer()
+
+                                Toggle("", isOn: Binding(
+                                    get: { walletViewModel.privacyEnabled },
+                                    set: { walletViewModel.setPrivacyEnabled($0) }
+                                ))
+                                    .toggleStyle(TerminalToggleStyle())
+                            }
+                            .padding(.vertical, 8)
+
+                            // Protocol selector
+                            TerminalSettingsRow(
+                                label: "PROTOCOL",
+                                value: "[\(walletViewModel.selectedPrivacyProtocol.displayName.uppercased())]",
+                                valueColor: protocolColor,
+                                showChevron: true
+                            ) {
+                                cycleProtocol()
+                            }
+
+                            // Status indicator
+                            TerminalSettingsRow(
+                                label: "STATUS",
+                                value: privacyStatusValue,
+                                valueColor: walletViewModel.privacyEnabled ? TerminalPalette.success : TerminalPalette.textMuted
+                            )
+
+                            // Pool balance (if any)
+                            if walletViewModel.privacyPoolBalance > 0 {
+                                TerminalSettingsRow(
+                                    label: "POOL_BAL",
+                                    value: String(format: "[%.4f SOL]", walletViewModel.privacyPoolBalance),
+                                    valueColor: TerminalPalette.cyan
+                                )
+                            }
+
+                            // Error display
+                            if let error = walletViewModel.privacyError {
+                                Text("// ERROR: \(error)")
+                                    .font(TerminalTypography.label())
+                                    .foregroundColor(TerminalPalette.error)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, 4)
+                            }
+
+                            // Info button
+                            TerminalSettingsRow(
+                                label: "INFO",
+                                value: "[VIEW]",
+                                showChevron: true
+                            ) {
+                                showingPrivacyInfo = true
+                            }
+
+                            // Prize value display
+                            if walletViewModel.selectedPrivacyProtocol != .direct {
+                                Text("// Hackathon bounty: $\(walletViewModel.privacyPrizeValue)")
+                                    .font(TerminalTypography.label())
+                                    .foregroundColor(TerminalPalette.warning)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, 4)
+                            }
                         }
 
                         // About Section
@@ -171,6 +244,9 @@ struct SettingsView: View {
             .sheet(isPresented: $showingBackupWallet) {
                 WalletBackupView()
             }
+            .sheet(isPresented: $showingPrivacyInfo) {
+                PrivacyInfoSheet()
+            }
             .confirmationDialog(
                 "Clear Activity History",
                 isPresented: $showingClearActivityConfirmation,
@@ -206,6 +282,309 @@ struct SettingsView: View {
     private var truncatedStealthAddress: String {
         guard let addr = walletViewModel.displayMetaAddress else { return "NOT_SET" }
         return "\(addr.prefix(6))...\(addr.suffix(4))"
+    }
+
+    // MARK: - Privacy Protocol Helpers
+
+    private var protocolColor: Color {
+        switch walletViewModel.selectedPrivacyProtocol {
+        case .shadowWire:
+            return TerminalPalette.purple
+        case .privacyCash:
+            return TerminalPalette.cyan
+        case .direct:
+            return TerminalPalette.textMuted
+        }
+    }
+
+    private var privacyStatusValue: String {
+        if !walletViewModel.privacyEnabled {
+            return "[DISABLED]"
+        }
+        if !walletViewModel.privacyReady && walletViewModel.selectedPrivacyProtocol != .direct {
+            return "[LOADING]"
+        }
+        switch walletViewModel.selectedPrivacyProtocol {
+        case .direct:
+            return "[DIRECT]"
+        case .shadowWire, .privacyCash:
+            return walletViewModel.privacyReady ? "[ACTIVE]" : "[LOADING]"
+        }
+    }
+
+    private func cycleProtocol() {
+        let protocols: [PrivacyProtocolId] = [.direct, .shadowWire, .privacyCash]
+        if let currentIndex = protocols.firstIndex(of: walletViewModel.selectedPrivacyProtocol) {
+            let nextIndex = (currentIndex + 1) % protocols.count
+            let newProtocol = protocols[nextIndex]
+
+            // Set protocol asynchronously
+            Task {
+                await walletViewModel.setPrivacyProtocol(newProtocol)
+            }
+        }
+    }
+}
+
+// MARK: - Terminal Toggle Style
+
+struct TerminalToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack {
+            configuration.label
+
+            Button {
+                configuration.isOn.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Text(configuration.isOn ? "[ON]" : "[OFF]")
+                        .font(TerminalTypography.label())
+                        .foregroundColor(configuration.isOn ? TerminalPalette.success : TerminalPalette.textMuted)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(TerminalPalette.surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 2)
+                                .stroke(configuration.isOn ? TerminalPalette.success.opacity(0.5) : TerminalPalette.border, lineWidth: 1)
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+// MARK: - Privacy Info Sheet
+
+struct PrivacyInfoSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TerminalPalette.background
+                    .ignoresSafeArea()
+
+                ScanlineOverlay()
+                    .ignoresSafeArea()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        // Header
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("[PRIVACY_PROTOCOLS]")
+                                .font(TerminalTypography.header())
+                                .foregroundColor(TerminalPalette.purple)
+
+                            Text("// Enhanced on-chain privacy for settlements")
+                                .font(TerminalTypography.label())
+                                .foregroundColor(TerminalPalette.textMuted)
+                        }
+
+                        // Direct mode
+                        TerminalProtocolCard(
+                            name: "DIRECT",
+                            description: "Standard on-chain transfer. No privacy enhancement.",
+                            prize: 0,
+                            color: TerminalPalette.textMuted
+                        )
+
+                        // ShadowWire
+                        TerminalProtocolCard(
+                            name: "SHADOWWIRE",
+                            description: "Radr Labs privacy pool using Bulletproof proofs. Hides transfer amounts and breaks sender-receiver link.",
+                            prize: 15_000,
+                            color: TerminalPalette.purple
+                        )
+
+                        // Privacy Cash
+                        TerminalProtocolCard(
+                            name: "PRIVACY_CASH",
+                            description: "Zero-knowledge privacy pool. Lighter weight alternative for amount hiding.",
+                            prize: 6_000,
+                            color: TerminalPalette.cyan
+                        )
+
+                        // Combined value
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("> COMBINED_BOUNTY:")
+                                .font(TerminalTypography.body(12))
+                                .foregroundColor(TerminalPalette.textPrimary)
+
+                            Text("$21,000")
+                                .font(TerminalTypography.header(24))
+                                .foregroundColor(TerminalPalette.warning)
+                                .terminalGlow(TerminalPalette.warning, radius: 4)
+
+                            Text("// Plus main track eligibility")
+                                .font(TerminalTypography.label())
+                                .foregroundColor(TerminalPalette.textMuted)
+                        }
+                        .padding()
+                        .background(
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(TerminalPalette.surface)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .stroke(TerminalPalette.warning.opacity(0.5), lineWidth: 1)
+                                )
+                        )
+
+                        // How it works
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("> HOW_IT_WORKS:")
+                                .font(TerminalTypography.body(12))
+                                .foregroundColor(TerminalPalette.cyan)
+
+                            TerminalInfoRow(label: "01", text: "Payment received via BLE mesh (offline)")
+                            TerminalInfoRow(label: "02", text: "Device comes online")
+                            TerminalInfoRow(label: "03", text: "Settlement routes through privacy pool")
+                            TerminalInfoRow(label: "04", text: "Amount hidden + link broken")
+                            TerminalInfoRow(label: "05", text: "Funds arrive at new stealth address")
+                        }
+                        .padding()
+                        .background(
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(TerminalPalette.surface)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .stroke(TerminalPalette.border, lineWidth: 1)
+                                )
+                        )
+
+                        Spacer(minLength: 40)
+                    }
+                    .padding(16)
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(TerminalPalette.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Text("[PRIVACY_INFO]")
+                        .font(TerminalTypography.header(12))
+                        .foregroundColor(TerminalPalette.purple)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Text("[CLOSE]")
+                            .font(TerminalTypography.label())
+                            .foregroundColor(TerminalPalette.cyan)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct TerminalProtocolCard: View {
+    let name: String
+    let description: String
+    let prize: UInt
+    let color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("[\(name)]")
+                    .font(TerminalTypography.header(14))
+                    .foregroundColor(color)
+
+                Spacer()
+
+                if prize > 0 {
+                    Text("$\(prize)")
+                        .font(TerminalTypography.label())
+                        .foregroundColor(TerminalPalette.warning)
+                }
+            }
+
+            Text(description)
+                .font(TerminalTypography.label())
+                .foregroundColor(TerminalPalette.textDim)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 2)
+                .fill(TerminalPalette.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2)
+                        .stroke(color.opacity(0.3), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - Privacy Status Bar (for WalletView)
+
+struct TerminalPrivacyStatusBar: View {
+    let `protocol`: PrivacyProtocolId
+    let isReady: Bool
+    let poolBalance: Double
+
+    private var protocolColor: Color {
+        switch `protocol` {
+        case .shadowWire: return TerminalPalette.purple
+        case .privacyCash: return TerminalPalette.cyan
+        case .direct: return TerminalPalette.textMuted
+        }
+    }
+
+    private var statusIcon: String {
+        if !isReady && `protocol` != .direct {
+            return "..."
+        }
+        return isReady ? "[OK]" : "[-]"
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Protocol indicator
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(protocolColor)
+                    .frame(width: 6, height: 6)
+
+                Text("PRIVACY:")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textMuted)
+
+                Text(`protocol`.displayName.uppercased())
+                    .font(TerminalTypography.label())
+                    .foregroundColor(protocolColor)
+            }
+
+            Spacer()
+
+            // Status
+            Text(statusIcon)
+                .font(TerminalTypography.label())
+                .foregroundColor(isReady ? TerminalPalette.success : TerminalPalette.warning)
+
+            // Pool balance (if any)
+            if poolBalance > 0 {
+                Text(String(format: "%.4f", poolBalance))
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.cyan)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 2)
+                .fill(TerminalPalette.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2)
+                        .stroke(protocolColor.opacity(0.3), lineWidth: 1)
+                )
+        )
     }
 }
 

@@ -148,6 +148,15 @@ struct WalletView: View {
                 isUnshielding: showUnshieldConfirm || walletViewModel.isUnshielding
             )
 
+            // Privacy Protocol Status (show when enabled)
+            if walletViewModel.privacyEnabled {
+                TerminalPrivacyStatusBar(
+                    protocol: walletViewModel.selectedPrivacyProtocol,
+                    isReady: walletViewModel.privacyReady,
+                    poolBalance: walletViewModel.privacyPoolBalance
+                )
+            }
+
             // Stealth Wallet Container (Purple)
             TerminalStealthWalletContainer(
                 balance: walletViewModel.stealthBalance,

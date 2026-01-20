@@ -43,6 +43,9 @@ public class MeshNetworkManager: ObservableObject {
     /// Payload encryption service
     public let encryptionService: PayloadEncryptionService
 
+    /// Privacy routing service for enhanced sender anonymity
+    public var privacyRoutingService: PrivacyRoutingService?
+
     // MARK: - Private
 
     private let rpcClient: SolanaRPCClient
@@ -162,6 +165,20 @@ public class MeshNetworkManager: ObservableObject {
         stopMesh()
         networkMonitor.stop()
         cancellables.removeAll()
+    }
+
+    // MARK: - Privacy Routing Configuration
+
+    /// Configure privacy routing for enhanced anonymity
+    /// This enables routing shield/unshield operations through the privacy pool
+    /// - Parameter service: The privacy routing service to use (nil to disable)
+    public func setPrivacyRoutingService(_ service: PrivacyRoutingService?) {
+        self.privacyRoutingService = service
+        // Pass to settlement service
+        settlementService.privacyRoutingService = service
+        // Pass to wallet manager for shield/unshield operations
+        walletManager.setPrivacyRoutingService(service)
+        print("[MeshNetwork] Privacy routing \(service != nil ? "enabled" : "disabled")")
     }
 
     // MARK: - Sending Payments
@@ -340,8 +357,34 @@ public class MeshNetworkManager: ObservableObject {
                 signature: signature
             )
 
-            print("[MESH-SEND] Submitting transaction to network...")
-            let txSignature = try await faucet.sendTransaction(signedTx)
+            // Check if privacy routing should be used for sender anonymity
+            let txSignature: String
+            if let privacyService = privacyRoutingService,
+               privacyService.shouldUsePrivacyRouting(for: intent.amount) {
+                print("[MESH-SEND] Using privacy routing via \(privacyService.selectedProtocol.displayName)")
+
+                // For outgoing payments from main wallet, we need to first deposit into privacy pool
+                // then withdraw to the stealth address
+                do {
+                    // Deposit from main wallet (requires on-chain tx first, then privacy withdrawal)
+                    _ = try await privacyService.deposit(amount: intent.amount)
+                    txSignature = try await privacyService.withdraw(
+                        amount: intent.amount,
+                        destination: intent.stealthAddress
+                    ).signature
+                    print("[MESH-SEND] ✓ Privacy-routed transaction: \(txSignature)")
+                } catch {
+                    if privacyService.configuration.fallbackToDirect {
+                        print("[MESH-SEND] Privacy routing failed, falling back to direct: \(error)")
+                        txSignature = try await faucet.sendTransaction(signedTx)
+                    } else {
+                        throw error
+                    }
+                }
+            } else {
+                print("[MESH-SEND] Submitting transaction to network...")
+                txSignature = try await faucet.sendTransaction(signedTx)
+            }
             print("[MESH-SEND] ✓ Transaction submitted: \(txSignature)")
 
             // Wait for confirmation

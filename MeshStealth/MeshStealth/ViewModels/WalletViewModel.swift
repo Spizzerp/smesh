@@ -44,8 +44,18 @@ class WalletViewModel: ObservableObject {
     @Published var settlementProgress: SettlementProgress?
     @Published var lastSettlementResult: SettlementResult?
 
+    // Privacy Protocol State
+    @Published var privacyEnabled = false
+    @Published var selectedPrivacyProtocol: PrivacyProtocolId = .direct
+    @Published var privacyReady = false
+    @Published var privacyPoolBalance: Double = 0
+    @Published var privacyError: String?
+
     /// Current network (for UI display)
     let network: SolanaNetwork = .devnet
+
+    /// Privacy routing service
+    let privacyRoutingService = PrivacyRoutingService()
 
     // MARK: - Private
 
@@ -58,6 +68,7 @@ class WalletViewModel: ObservableObject {
     init(walletManager: StealthWalletManager) {
         self.walletManager = walletManager
         setupBindings()
+        setupPrivacyBindings()
     }
 
     private func setupBindings() {
@@ -116,6 +127,22 @@ class WalletViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    private func setupPrivacyBindings() {
+        // Bind privacy service state
+        privacyRoutingService.$selectedProtocol
+            .assign(to: &$selectedPrivacyProtocol)
+
+        privacyRoutingService.$isEnabled
+            .assign(to: &$privacyEnabled)
+
+        privacyRoutingService.$isReady
+            .assign(to: &$privacyReady)
+
+        privacyRoutingService.$poolBalance
+            .map { Double($0) / 1_000_000_000 }
+            .assign(to: &$privacyPoolBalance)
     }
 
     // MARK: - Actions
@@ -290,6 +317,58 @@ class WalletViewModel: ObservableObject {
         if results.isEmpty && !pendingPayments.isEmpty {
             unshieldError = "Failed to unshield payments"
         }
+    }
+
+    // MARK: - Privacy Protocol
+
+    /// Set the privacy protocol
+    func setPrivacyProtocol(_ protocolId: PrivacyProtocolId) async {
+        privacyError = nil
+        do {
+            try await privacyRoutingService.setProtocol(protocolId)
+
+            // Set the wallet key for the privacy provider (needed for signing transactions)
+            if protocolId != .direct {
+                if let secretKey = await walletManager.mainWalletSecretKey {
+                    await privacyRoutingService.setWallet(secretKey)
+                } else {
+                    print("[WalletVM] Warning: No wallet key available for privacy protocol")
+                }
+            }
+        } catch {
+            privacyError = error.localizedDescription
+        }
+    }
+
+    /// Enable or disable privacy routing
+    func setPrivacyEnabled(_ enabled: Bool) {
+        privacyRoutingService.setEnabled(enabled)
+    }
+
+    /// Initialize the privacy service
+    func initializePrivacy() async {
+        guard selectedPrivacyProtocol != .direct else { return }
+        privacyError = nil
+        do {
+            try await privacyRoutingService.initialize()
+
+            // Set the wallet key after initialization
+            if let secretKey = await walletManager.mainWalletSecretKey {
+                await privacyRoutingService.setWallet(secretKey)
+            }
+        } catch {
+            privacyError = error.localizedDescription
+        }
+    }
+
+    /// Privacy status string for display
+    var privacyStatusString: String {
+        privacyRoutingService.statusString
+    }
+
+    /// Prize value of selected protocol
+    var privacyPrizeValue: UInt {
+        privacyRoutingService.prizeValue
     }
 
     // MARK: - Mnemonic / Backup

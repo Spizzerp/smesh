@@ -439,6 +439,14 @@ public class StealthWalletManager: ObservableObject {
         }
     }
 
+    /// Get the main wallet's secret key for privacy protocol integration
+    /// This is needed for Privacy Cash and ShadowWire to sign transactions
+    public var mainWalletSecretKey: Data? {
+        get async {
+            await mainWallet?.secretKeyData
+        }
+    }
+
     /// Import wallet from mnemonic phrase
     /// - Parameter mnemonic: Array of BIP-39 words
     public func importWallet(mnemonic: [String]) async throws {
@@ -1001,9 +1009,32 @@ public class StealthWalletManager: ObservableObject {
     // MARK: - Shield Operations
 
     private var shieldService: ShieldService?
+    private var _privacyRoutingService: PrivacyRoutingService?
+
+    /// Set the privacy routing service for privacy-enhanced shield/unshield operations
+    /// When set, unshield operations will route through the privacy pool
+    public func setPrivacyRoutingService(_ service: PrivacyRoutingService?) {
+        _privacyRoutingService = service
+        // Update existing shield service if any
+        Task {
+            await shieldService?.setPrivacyRoutingService(service)
+        }
+    }
+
+    /// Lazily create or return the shield service with privacy routing configured
+    private func getOrCreateShieldService() async -> ShieldService {
+        if let existing = shieldService {
+            return existing
+        }
+        let service = ShieldService(rpcClient: faucet)
+        await service.setPrivacyRoutingService(_privacyRoutingService)
+        shieldService = service
+        return service
+    }
 
     /// Shield funds from main wallet to a stealth address (self-deposit)
     /// Automatically performs split/hop/recombine mixing after the initial shield for privacy
+    /// When privacy routing is enabled, routes through privacy pool: main → pool → stealth
     /// - Parameter lamports: Amount to shield in lamports
     /// - Returns: ShieldResult with transaction details
     public func shield(lamports: UInt64) async throws -> ShieldResult {
@@ -1011,17 +1042,35 @@ public class StealthWalletManager: ObservableObject {
             throw WalletError.notInitialized
         }
 
-        if shieldService == nil {
-            shieldService = ShieldService(rpcClient: faucet)
-        }
+        let shieldSvc = await getOrCreateShieldService()
 
-        // Step 1: Initial shield (main → first stealth address)
+        // Step 1: Initial shield
+        // If privacy routing is enabled, use pool routing: main → pool → stealth
+        // Otherwise, direct transfer: main → stealth
         print("[SHIELD] Starting shield of \(lamports) lamports")
-        let result = try await shieldService!.shield(
-            lamports: lamports,
-            mainWallet: mainWallet,
-            stealthKeyPair: keyPair
-        )
+
+        let result: ShieldResult
+        if let privacyService = _privacyRoutingService,
+           await privacyService.shouldUsePrivacyRouting(for: lamports) {
+            print("[SHIELD] 🔒 Using privacy pool routing via \(await privacyService.selectedProtocol.displayName)")
+            print("[SHIELD] This will: main → pool → stealth (breaking on-chain link)")
+            result = try await shieldSvc.shieldWithPrivacy(
+                lamports: lamports,
+                mainWallet: mainWallet,
+                stealthKeyPair: keyPair
+            )
+        } else {
+            if _privacyRoutingService != nil {
+                print("[SHIELD] Privacy routing available but not enabled for this amount")
+            } else {
+                print("[SHIELD] No privacy routing configured, using direct transfer")
+            }
+            result = try await shieldSvc.shield(
+                lamports: lamports,
+                mainWallet: mainWallet,
+                stealthKeyPair: keyPair
+            )
+        }
         print("[SHIELD] Initial shield complete: \(result.stealthAddress)")
 
         // Step 2: Create initial payment record
@@ -1209,14 +1258,12 @@ public class StealthWalletManager: ObservableObject {
             throw error
         }
 
-        if shieldService == nil {
-            shieldService = ShieldService(rpcClient: faucet)
-        }
+        let shieldSvc = await getOrCreateShieldService()
 
         let mainAddress = await mainWallet.address
         print("[WM-UNSHIELD] Main wallet address: \(mainAddress)")
 
-        let result = try await shieldService!.unshield(
+        let result = try await shieldSvc.unshield(
             payment: payment,
             mainWalletAddress: mainAddress,
             spendingKey: spendingKey,
@@ -1300,11 +1347,9 @@ public class StealthWalletManager: ObservableObject {
         let spendingKey = try deriveSpendingKey(for: payment)
         print("[WM-HOP] Spending key derived successfully")
 
-        if shieldService == nil {
-            shieldService = ShieldService(rpcClient: faucet)
-        }
+        let shieldSvc = await getOrCreateShieldService()
 
-        let result = try await shieldService!.hop(
+        let result = try await shieldSvc.hop(
             payment: payment,
             stealthKeyPair: keyPair,
             spendingKey: spendingKey,
@@ -1417,9 +1462,7 @@ public class StealthWalletManager: ObservableObject {
         // Derive spending key for the source payment
         let spendingKey = try deriveSpendingKey(for: payment)
 
-        if shieldService == nil {
-            shieldService = ShieldService(rpcClient: faucet)
-        }
+        let shieldSvc = await getOrCreateShieldService()
 
         // Create a group ID to link all splits together
         let splitGroupId = UUID()
@@ -1439,7 +1482,7 @@ public class StealthWalletManager: ObservableObject {
             // Send funds to the new stealth address
             // On last split, send ALL remaining balance (nil) to close the source account
             // This avoids Solana rent issues where leftover lamports are below rent-exempt threshold
-            let signature = try await shieldService!.sendFromStealth(
+            let signature = try await shieldSvc.sendFromStealth(
                 fromStealthAddress: payment.stealthAddress,
                 spendingKey: spendingKey,
                 toAddress: stealthResult.stealthAddress,
@@ -1552,9 +1595,7 @@ public class StealthWalletManager: ObservableObject {
             throw WalletError.notInitialized
         }
 
-        if shieldService == nil {
-            shieldService = ShieldService(rpcClient: faucet)
-        }
+        let shieldSvc = await getOrCreateShieldService()
 
         // Generate a single new stealth address for the combined funds (use hybrid meta-address)
         let metaAddress = keyPair.hybridMetaAddressString
@@ -1584,7 +1625,7 @@ public class StealthWalletManager: ObservableObject {
 
             // Send ALL to the combined address (nil closes the source account)
             // This avoids Solana rent issues and ensures exact balance transfer
-            let signature = try await shieldService!.sendFromStealth(
+            let signature = try await shieldSvc.sendFromStealth(
                 fromStealthAddress: payment.stealthAddress,
                 spendingKey: spendingKey,
                 toAddress: finalResult.stealthAddress,
