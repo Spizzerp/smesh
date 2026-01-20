@@ -131,11 +131,19 @@ smesh/
 │   │   ├── App/
 │   │   │   └── MeshStealthApp.swift
 │   │   ├── Views/
+│   │   │   ├── Components/
+│   │   │   │   ├── NeuromorphicStyle.swift
+│   │   │   │   ├── NeuromorphicButtons.swift
+│   │   │   │   ├── NeuromorphicInputs.swift
+│   │   │   │   ├── NeuromorphicWalletContainer.swift
+│   │   │   │   └── WalletBadges.swift
 │   │   │   ├── WalletView.swift
+│   │   │   ├── ActivityView.swift
+│   │   │   ├── NearbyPeersView.swift
 │   │   │   ├── SendPaymentView.swift
-│   │   │   ├── ReceiveView.swift
-│   │   │   ├── MeshStatusView.swift
-│   │   │   └── QRScannerView.swift
+│   │   │   ├── PendingPaymentsView.swift
+│   │   │   ├── SettingsView.swift
+│   │   │   └── WalletBackupView.swift
 │   │   ├── ViewModels/
 │   │   │   ├── WalletViewModel.swift
 │   │   │   └── MeshViewModel.swift
@@ -165,7 +173,15 @@ smesh/
 │           │   ├── Solana/
 │           │   │   ├── SolanaRPCClient.swift    # Helius RPC
 │           │   │   ├── TransactionBuilder.swift # SPL transfers
-│           │   │   └── SettlementService.swift  # Auto-settle
+│           │   │   └── DevnetFaucet.swift       # Devnet airdrop & transactions
+│           │   ├── Integration/
+│           │   │   ├── MeshNetworkManager.swift # High-level mesh coordinator
+│           │   │   ├── StealthWalletManager.swift # Wallet state & activity
+│           │   │   ├── ShieldService.swift      # Shield/unshield operations
+│           │   │   ├── MixingService.swift      # Auto-mixing (1-5 hops)
+│           │   │   ├── SettlementService.swift  # Auto-settle when online
+│           │   │   ├── NetworkMonitor.swift     # Connectivity detection
+│           │   │   └── PayloadEncryption.swift  # Mesh payload encryption
 │           │   └── Extensions/
 │           │       ├── Data+Extensions.swift
 │           │       └── String+Base58.swift
@@ -222,7 +238,27 @@ smesh/
 |------|---------|
 | `SolanaRPCClient.swift` | Helius RPC interaction, transaction submission |
 | `TransactionBuilder.swift` | SPL token transfer instruction construction |
-| `SettlementService.swift` | Network monitoring, auto-settlement when online |
+| `DevnetFaucet.swift` | Devnet airdrop requests and transaction helpers |
+
+### Integration Services
+| File | Purpose |
+|------|---------|
+| `MeshNetworkManager.swift` | High-level coordinator for mesh, wallet, and settlement |
+| `StealthWalletManager.swift` | Wallet state, activity tracking, payment management |
+| `ShieldService.swift` | Shield (main→stealth) and unshield (stealth→main) operations |
+| `MixingService.swift` | Automatic mixing with random 1-5 hops for privacy |
+| `SettlementService.swift` | Auto-settlement of pending payments when online |
+| `NetworkMonitor.swift` | NWPathMonitor wrapper for connectivity detection |
+| `PayloadEncryption.swift` | X25519/AES-256-GCM encryption for mesh payloads |
+
+### UI Components
+| File | Purpose |
+|------|---------|
+| `NeuromorphicStyle.swift` | Unified color palettes (#2D2D3A), shadow configs, view modifiers |
+| `NeuromorphicButtons.swift` | Action, icon, text, and primary button components |
+| `NeuromorphicInputs.swift` | Amount input with MAX button, unshield confirmation |
+| `NeuromorphicWalletContainer.swift` | Public (blue) and Stealth (purple) wallet card containers |
+| `WalletBadges.swift` | Network, quantum, address, and status indicator badges |
 
 ## Coding Conventions
 

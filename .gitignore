@@ -61,3 +61,8 @@ coverage/
 *.tmp
 *.temp
 *.log
+
+# NPM/Node.js (Privacy SDK bundling)
+node_modules/
+MeshStealth/Packages/StealthCore/Scripts/shims/
+package-lock.json
