@@ -7,6 +7,12 @@ struct NearbyPeersView: View {
     @State private var selectedPeer: NearbyPeer?
     @State private var showingAddressRequest = false
 
+    // Chat-related state
+    @State private var showingPeerActionPopup = false
+    @State private var showingChatRequest = false
+    @State private var activeChatSessionID: UUID?
+    @State private var navigateToChat = false
+
     var body: some View {
         NavigationStack {
             mainContent
@@ -27,6 +33,61 @@ struct NearbyPeersView: View {
                 .onChange(of: meshViewModel.receivedMetaAddress) { _, response in
                     if response != nil {
                         showingSendSheet = true
+                    }
+                }
+                .onChange(of: meshViewModel.pendingChatRequest) { _, request in
+                    showingChatRequest = request != nil
+                }
+                .onChange(of: meshViewModel.activeChatSessionID) { _, sessionID in
+                    if sessionID != nil {
+                        activeChatSessionID = sessionID
+                        navigateToChat = true
+                    }
+                }
+                .navigationDestination(isPresented: $navigateToChat) {
+                    if let sessionID = activeChatSessionID,
+                       let chatManager = meshViewModel.chatManager {
+                        ChatView(sessionID: sessionID, chatManager: chatManager)
+                    }
+                }
+                .overlay {
+                    // Peer action popup
+                    if showingPeerActionPopup, let peer = selectedPeer {
+                        TerminalPeerActionPopup(
+                            peerName: peer.name,
+                            supportsChat: peer.supportsHybrid,
+                            onSendPayment: {
+                                showingPeerActionPopup = false
+                                requestAddressFromPeer(peer)
+                            },
+                            onStartChat: {
+                                showingPeerActionPopup = false
+                                startChatWithPeer(peer)
+                            },
+                            onCancel: {
+                                showingPeerActionPopup = false
+                                selectedPeer = nil
+                            }
+                        )
+                        .transition(.opacity)
+                    }
+
+                    // Chat request popup
+                    if showingChatRequest, let request = meshViewModel.pendingChatRequest {
+                        TerminalChatRequestPopup(
+                            requesterName: request.requesterName,
+                            onAccept: {
+                                Task {
+                                    await meshViewModel.acceptChatRequest()
+                                }
+                            },
+                            onDecline: {
+                                Task {
+                                    await meshViewModel.declineChatRequest()
+                                }
+                            }
+                        )
+                        .transition(.opacity)
                     }
                 }
         }
@@ -69,7 +130,7 @@ struct NearbyPeersView: View {
         if let closest = meshViewModel.closestPeer {
             TerminalTapToPayCard(peer: closest) {
                 selectedPeer = closest
-                requestAddressFromPeer(closest)
+                showingPeerActionPopup = true
             }
         }
     }
@@ -82,7 +143,7 @@ struct NearbyPeersView: View {
                 peers: otherPeers,
                 onSelect: { peer in
                     selectedPeer = peer
-                    requestAddressFromPeer(peer)
+                    showingPeerActionPopup = true
                 }
             )
         }
@@ -162,6 +223,12 @@ struct NearbyPeersView: View {
     private func requestAddressFromPeer(_ peer: NearbyPeer) {
         Task {
             await meshViewModel.requestMetaAddress(from: peer)
+        }
+    }
+
+    private func startChatWithPeer(_ peer: NearbyPeer) {
+        Task {
+            await meshViewModel.startChat(with: peer)
         }
     }
 }

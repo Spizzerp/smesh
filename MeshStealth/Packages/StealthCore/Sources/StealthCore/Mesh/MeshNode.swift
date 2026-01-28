@@ -134,6 +134,38 @@ public actor MeshNode {
         metaAddressResponseSubject.eraseToAnyPublisher()
     }
 
+    // MARK: - Chat Message Publishers
+
+    /// Publisher for incoming chat requests
+    private nonisolated(unsafe) let chatRequestSubject = PassthroughSubject<ChatRequest, Never>()
+    public nonisolated var chatRequests: AnyPublisher<ChatRequest, Never> {
+        chatRequestSubject.eraseToAnyPublisher()
+    }
+
+    /// Publisher for chat accept responses
+    private nonisolated(unsafe) let chatAcceptSubject = PassthroughSubject<ChatAccept, Never>()
+    public nonisolated var chatAccepts: AnyPublisher<ChatAccept, Never> {
+        chatAcceptSubject.eraseToAnyPublisher()
+    }
+
+    /// Publisher for chat decline responses
+    private nonisolated(unsafe) let chatDeclineSubject = PassthroughSubject<ChatDecline, Never>()
+    public nonisolated var chatDeclines: AnyPublisher<ChatDecline, Never> {
+        chatDeclineSubject.eraseToAnyPublisher()
+    }
+
+    /// Publisher for encrypted chat messages
+    private nonisolated(unsafe) let chatMessageSubject = PassthroughSubject<ChatMessagePayload, Never>()
+    public nonisolated var chatMessages: AnyPublisher<ChatMessagePayload, Never> {
+        chatMessageSubject.eraseToAnyPublisher()
+    }
+
+    /// Publisher for chat end messages
+    private nonisolated(unsafe) let chatEndSubject = PassthroughSubject<ChatEnd, Never>()
+    public nonisolated var chatEnds: AnyPublisher<ChatEnd, Never> {
+        chatEndSubject.eraseToAnyPublisher()
+    }
+
     public init(
         peerID: String = UUID().uuidString,
         capabilities: PeerCapabilities = PeerCapabilities()
@@ -239,6 +271,22 @@ public actor MeshNode {
 
         case .metaAddressResponse:
             return processMetaAddressResponse(message)
+
+        // Chat message types
+        case .chatRequest:
+            return processChatRequest(message)
+
+        case .chatAccept:
+            return processChatAccept(message)
+
+        case .chatDecline:
+            return processChatDecline(message)
+
+        case .chatMessage:
+            return processChatMessage(message)
+
+        case .chatEnd:
+            return processChatEnd(message)
         }
     }
 
@@ -306,6 +354,68 @@ public actor MeshNode {
         // Notify via publisher so app can use the received address
         metaAddressResponseSubject.send(response)
 
+        return .processed
+    }
+
+    // MARK: - Chat Message Processing
+
+    private func processChatRequest(_ message: MeshMessage) -> ProcessResult {
+        guard let request = try? message.decodeChatRequest() else {
+            return .invalid
+        }
+
+        // Validate request
+        guard request.isValid else {
+            return .invalid
+        }
+
+        chatRequestSubject.send(request)
+        return .processed
+    }
+
+    private func processChatAccept(_ message: MeshMessage) -> ProcessResult {
+        guard let accept = try? message.decodeChatAccept() else {
+            return .invalid
+        }
+
+        // Validate accept
+        guard accept.isValid else {
+            return .invalid
+        }
+
+        chatAcceptSubject.send(accept)
+        return .processed
+    }
+
+    private func processChatDecline(_ message: MeshMessage) -> ProcessResult {
+        guard let decline = try? message.decodeChatDecline() else {
+            return .invalid
+        }
+
+        chatDeclineSubject.send(decline)
+        return .processed
+    }
+
+    private func processChatMessage(_ message: MeshMessage) -> ProcessResult {
+        guard let chatPayload = try? message.decodeChatMessage() else {
+            return .invalid
+        }
+
+        // Validate message
+        guard chatPayload.isValid else {
+            return .invalid
+        }
+
+        chatMessageSubject.send(chatPayload)
+        return .processed
+    }
+
+    private func processChatEnd(_ message: MeshMessage) -> ProcessResult {
+        guard let end = try? message.decodeChatEnd() else {
+            return .invalid
+        }
+
+        chatEndSubject.send(end)
         return .processed
     }
 

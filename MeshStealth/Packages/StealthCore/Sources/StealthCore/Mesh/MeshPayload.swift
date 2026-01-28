@@ -121,6 +121,23 @@ public enum MeshMessageType: UInt8, Codable, Sendable {
 
     /// Response with meta-address
     case metaAddressResponse = 6
+
+    // MARK: - Chat Message Types
+
+    /// Request to start encrypted chat session
+    case chatRequest = 10
+
+    /// Accept chat session request
+    case chatAccept = 11
+
+    /// Decline chat session request
+    case chatDecline = 12
+
+    /// Encrypted chat message
+    case chatMessage = 13
+
+    /// End chat session
+    case chatEnd = 15
 }
 
 // MARK: - Meta-Address Exchange Payloads
@@ -309,6 +326,143 @@ public struct MeshMessage: Codable, Sendable, Identifiable {
         }
         let decoder = JSONDecoder()
         return try decoder.decode(MetaAddressResponse.self, from: payload)
+    }
+
+    // MARK: - Chat Message Helpers
+
+    /// Create a chat request message
+    public static func chatRequest(
+        request: ChatRequest,
+        originPeerID: String
+    ) throws -> MeshMessage {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let requestData = try encoder.encode(request)
+
+        return MeshMessage(
+            type: .chatRequest,
+            ttl: 1,  // Direct peer-to-peer only
+            originPeerID: originPeerID,
+            payload: requestData
+        )
+    }
+
+    /// Create a chat accept message
+    public static func chatAccept(
+        accept: ChatAccept,
+        originPeerID: String
+    ) throws -> MeshMessage {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let acceptData = try encoder.encode(accept)
+
+        return MeshMessage(
+            type: .chatAccept,
+            ttl: 1,
+            originPeerID: originPeerID,
+            payload: acceptData
+        )
+    }
+
+    /// Create a chat decline message
+    public static func chatDecline(
+        decline: ChatDecline,
+        originPeerID: String
+    ) throws -> MeshMessage {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let declineData = try encoder.encode(decline)
+
+        return MeshMessage(
+            type: .chatDecline,
+            ttl: 1,
+            originPeerID: originPeerID,
+            payload: declineData
+        )
+    }
+
+    /// Create an encrypted chat message
+    public static func chatMessage(
+        payload: ChatMessagePayload,
+        originPeerID: String
+    ) throws -> MeshMessage {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let messageData = try encoder.encode(payload)
+
+        return MeshMessage(
+            type: .chatMessage,
+            ttl: 1,  // Direct peer-to-peer only
+            originPeerID: originPeerID,
+            payload: messageData
+        )
+    }
+
+    /// Create a chat end message
+    public static func chatEnd(
+        end: ChatEnd,
+        originPeerID: String
+    ) throws -> MeshMessage {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let endData = try encoder.encode(end)
+
+        return MeshMessage(
+            type: .chatEnd,
+            ttl: 1,
+            originPeerID: originPeerID,
+            payload: endData
+        )
+    }
+
+    /// Decode chat request payload
+    public func decodeChatRequest() throws -> ChatRequest {
+        guard type == .chatRequest else {
+            throw MeshError.invalidMessageType
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(ChatRequest.self, from: payload)
+    }
+
+    /// Decode chat accept payload
+    public func decodeChatAccept() throws -> ChatAccept {
+        guard type == .chatAccept else {
+            throw MeshError.invalidMessageType
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(ChatAccept.self, from: payload)
+    }
+
+    /// Decode chat decline payload
+    public func decodeChatDecline() throws -> ChatDecline {
+        guard type == .chatDecline else {
+            throw MeshError.invalidMessageType
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(ChatDecline.self, from: payload)
+    }
+
+    /// Decode chat message payload
+    public func decodeChatMessage() throws -> ChatMessagePayload {
+        guard type == .chatMessage else {
+            throw MeshError.invalidMessageType
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(ChatMessagePayload.self, from: payload)
+    }
+
+    /// Decode chat end payload
+    public func decodeChatEnd() throws -> ChatEnd {
+        guard type == .chatEnd else {
+            throw MeshError.invalidMessageType
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(ChatEnd.self, from: payload)
     }
 
     /// Decrement TTL for forwarding

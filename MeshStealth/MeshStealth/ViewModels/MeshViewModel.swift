@@ -54,6 +54,15 @@ class MeshViewModel: ObservableObject {
 
     @Published var lastError: Error?
 
+    // MARK: - Chat State
+
+    @Published var pendingChatRequest: ChatRequest?
+    @Published var activeChatSessionID: UUID?
+    @Published var isChatConnecting = false
+
+    /// The chat manager for this view model
+    private(set) var chatManager: ChatManager?
+
     // MARK: - Private
 
     private let meshService: BLEMeshService
@@ -67,6 +76,13 @@ class MeshViewModel: ObservableObject {
         self.meshService = meshService
         self.walletManager = walletManager
         self.networkMonitor = networkMonitor
+
+        // Initialize chat manager with our peer ID
+        self.chatManager = ChatManager(
+            localPeerID: meshService.getNode().peerID,
+            localPeerName: nil
+        )
+
         setupBindings()
     }
 
@@ -133,6 +149,80 @@ class MeshViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] response in
                 self?.handleMetaAddressResponse(response)
+            }
+            .store(in: &cancellables)
+
+        // MARK: - Chat Message Subscriptions
+
+        // Subscribe to chat requests
+        meshNode.chatRequests
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] request in
+                self?.handleChatRequest(request)
+            }
+            .store(in: &cancellables)
+
+        // Subscribe to chat accepts
+        meshNode.chatAccepts
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] accept in
+                Task { @MainActor in
+                    await self?.handleChatAccept(accept)
+                }
+            }
+            .store(in: &cancellables)
+
+        // Subscribe to chat declines
+        meshNode.chatDeclines
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] decline in
+                Task { @MainActor in
+                    await self?.handleChatDecline(decline)
+                }
+            }
+            .store(in: &cancellables)
+
+        // Subscribe to chat messages
+        meshNode.chatMessages
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] message in
+                Task { @MainActor in
+                    await self?.handleChatMessage(message)
+                }
+            }
+            .store(in: &cancellables)
+
+        // Subscribe to chat end messages
+        meshNode.chatEnds
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] end in
+                Task { @MainActor in
+                    await self?.handleChatEnd(end)
+                }
+            }
+            .store(in: &cancellables)
+
+        // Subscribe to outgoing chat messages from ChatViewModel
+        NotificationCenter.default.publisher(for: .chatMessageToSend)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                if let payload = notification.userInfo?["payload"] as? ChatMessagePayload {
+                    Task { @MainActor in
+                        await self?.sendChatMessage(payload)
+                    }
+                }
+            }
+            .store(in: &cancellables)
+
+        // Subscribe to chat end from ChatViewModel
+        NotificationCenter.default.publisher(for: .chatEndToSend)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                if let payload = notification.userInfo?["payload"] as? ChatEnd {
+                    Task { @MainActor in
+                        await self?.sendChatEnd(payload)
+                    }
+                }
             }
             .store(in: &cancellables)
     }
@@ -213,6 +303,108 @@ class MeshViewModel: ObservableObject {
         pendingMetaAddressRequest = nil
     }
 
+    // MARK: - Chat Actions
+
+    /// Start a chat session with a peer
+    func startChat(with peer: NearbyPeer) async {
+        guard let chatManager = chatManager else { return }
+
+        isChatConnecting = true
+
+        do {
+            let (sessionID, request) = try await chatManager.startSession(
+                with: peer.id,
+                remotePeerName: peer.name
+            )
+
+            // Send the chat request
+            let message = try MeshMessage.chatRequest(
+                request: request,
+                originPeerID: meshService.getNode().peerID
+            )
+            try await meshService.sendToPeer(message, peerID: peer.id)
+
+            print("[MESH] Sent chat request to peer: \(peer.id)")
+        } catch {
+            lastError = error
+            isChatConnecting = false
+            print("[MESH] Failed to start chat: \(error)")
+        }
+    }
+
+    /// Accept a pending chat request
+    func acceptChatRequest() async {
+        guard let chatManager = chatManager,
+              let request = pendingChatRequest else { return }
+
+        do {
+            let accept = try await chatManager.acceptRequest(sessionID: request.sessionID)
+
+            // Send the accept response
+            let message = try MeshMessage.chatAccept(
+                accept: accept,
+                originPeerID: meshService.getNode().peerID
+            )
+            try await meshService.broadcastMessage(message)
+
+            // Navigate to chat
+            activeChatSessionID = request.sessionID
+            pendingChatRequest = nil
+
+            print("[MESH] Accepted chat request, session: \(request.sessionID)")
+        } catch {
+            lastError = error
+            print("[MESH] Failed to accept chat request: \(error)")
+        }
+    }
+
+    /// Decline a pending chat request
+    func declineChatRequest() async {
+        guard let chatManager = chatManager,
+              let request = pendingChatRequest else { return }
+
+        let decline = await chatManager.declineRequest(sessionID: request.sessionID)
+
+        do {
+            let message = try MeshMessage.chatDecline(
+                decline: decline,
+                originPeerID: meshService.getNode().peerID
+            )
+            try await meshService.broadcastMessage(message)
+        } catch {
+            print("[MESH] Failed to send decline: \(error)")
+        }
+
+        pendingChatRequest = nil
+    }
+
+    /// Send a chat message
+    private func sendChatMessage(_ payload: ChatMessagePayload) async {
+        do {
+            let message = try MeshMessage.chatMessage(
+                payload: payload,
+                originPeerID: meshService.getNode().peerID
+            )
+            try await meshService.broadcastMessage(message)
+        } catch {
+            lastError = error
+            print("[MESH] Failed to send chat message: \(error)")
+        }
+    }
+
+    /// Send chat end message
+    private func sendChatEnd(_ end: ChatEnd) async {
+        do {
+            let message = try MeshMessage.chatEnd(
+                end: end,
+                originPeerID: meshService.getNode().peerID
+            )
+            try await meshService.broadcastMessage(message)
+        } catch {
+            print("[MESH] Failed to send chat end: \(error)")
+        }
+    }
+
     // MARK: - Private Handlers
 
     private func handleMetaAddressRequest(_ request: MetaAddressRequest) {
@@ -222,6 +414,64 @@ class MeshViewModel: ObservableObject {
     private func handleMetaAddressResponse(_ response: MetaAddressResponse) {
         receivedMetaAddress = response
         isRequestingAddress = false
+    }
+
+    // MARK: - Chat Message Handlers
+
+    private func handleChatRequest(_ request: ChatRequest) {
+        guard let chatManager = chatManager else { return }
+
+        // Store as pending for UI to display
+        Task {
+            await chatManager.handleIncomingRequest(request)
+        }
+        pendingChatRequest = request
+    }
+
+    private func handleChatAccept(_ accept: ChatAccept) async {
+        guard let chatManager = chatManager else { return }
+
+        do {
+            try await chatManager.handleAccept(accept)
+            activeChatSessionID = accept.sessionID
+            isChatConnecting = false
+            print("[MESH] Chat session established: \(accept.sessionID)")
+        } catch {
+            lastError = error
+            isChatConnecting = false
+            print("[MESH] Failed to handle chat accept: \(error)")
+        }
+    }
+
+    private func handleChatDecline(_ decline: ChatDecline) async {
+        guard let chatManager = chatManager else { return }
+
+        await chatManager.handleDecline(decline)
+        isChatConnecting = false
+        print("[MESH] Chat request declined: \(decline.sessionID)")
+    }
+
+    private func handleChatMessage(_ message: ChatMessagePayload) async {
+        guard let chatManager = chatManager else { return }
+
+        do {
+            _ = try await chatManager.handleMessage(message)
+        } catch {
+            print("[MESH] Failed to handle chat message: \(error)")
+        }
+    }
+
+    private func handleChatEnd(_ end: ChatEnd) async {
+        guard let chatManager = chatManager else { return }
+
+        await chatManager.handleSessionEnd(end)
+
+        // Clear active session if it matches
+        if activeChatSessionID == end.sessionID {
+            activeChatSessionID = nil
+        }
+
+        print("[MESH] Chat session ended: \(end.sessionID)")
     }
 
     // MARK: - Computed Properties
