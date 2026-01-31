@@ -14,6 +14,8 @@
 		APP001 /* MeshStealthApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC001 /* MeshStealthApp.swift */; };
 		APP002 /* WalletViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC002 /* WalletViewModel.swift */; };
 		APP003 /* MeshViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC003 /* MeshViewModel.swift */; };
+		APP012 /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC011 /* ChatViewModel.swift */; };
+		APP013 /* ChatNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC012 /* ChatNotifications.swift */; };
 		APP004 /* WalletView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC004 /* WalletView.swift */; };
 		APP005 /* NearbyPeersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC005 /* NearbyPeersView.swift */; };
 		APP006 /* SendPaymentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC006 /* SendPaymentView.swift */; };
@@ -30,6 +32,12 @@
 		TERM14 /* TerminalButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM04 /* TerminalButtons.swift */; };
 		TERM15 /* TerminalInputs.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM05 /* TerminalInputs.swift */; };
 		TERM16 /* TerminalWalletContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM06 /* TerminalWalletContainer.swift */; };
+		APP014 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC013 /* ChatView.swift */; };
+		TERM17 /* TerminalPeerActionPopup.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM07 /* TerminalPeerActionPopup.swift */; };
+		TERM18 /* TerminalChatBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = TERM08 /* TerminalChatBubble.swift */; };
+		RADAR01 /* RadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RADAR00 /* RadarView.swift */; };
+		RADAR02 /* PeerDetailCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = RADAR03 /* PeerDetailCard.swift */; };
+		RADAR04 /* PeerNicknameStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = RADAR05 /* PeerNicknameStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +52,8 @@
 		SRC001 /* MeshStealthApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshStealthApp.swift; sourceTree = "<group>"; };
 		SRC002 /* WalletViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletViewModel.swift; sourceTree = "<group>"; };
 		SRC003 /* MeshViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshViewModel.swift; sourceTree = "<group>"; };
+		SRC011 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
+		SRC012 /* ChatNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatNotifications.swift; sourceTree = "<group>"; };
 		SRC004 /* WalletView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletView.swift; sourceTree = "<group>"; };
 		SRC005 /* NearbyPeersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyPeersView.swift; sourceTree = "<group>"; };
 		SRC006 /* SendPaymentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendPaymentView.swift; sourceTree = "<group>"; };
@@ -57,6 +67,12 @@
 		TERM04 /* TerminalButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalButtons.swift; sourceTree = "<group>"; };
 		TERM05 /* TerminalInputs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalInputs.swift; sourceTree = "<group>"; };
 		TERM06 /* TerminalWalletContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalWalletContainer.swift; sourceTree = "<group>"; };
+		SRC013 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		TERM07 /* TerminalPeerActionPopup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPeerActionPopup.swift; sourceTree = "<group>"; };
+		TERM08 /* TerminalChatBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalChatBubble.swift; sourceTree = "<group>"; };
+		RADAR00 /* RadarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarView.swift; sourceTree = "<group>"; };
+		RADAR03 /* PeerDetailCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerDetailCard.swift; sourceTree = "<group>"; };
+		RADAR05 /* PeerNicknameStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerNicknameStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -85,6 +101,10 @@
 				TERM04 /* TerminalButtons.swift */,
 				TERM05 /* TerminalInputs.swift */,
 				TERM06 /* TerminalWalletContainer.swift */,
+				TERM07 /* TerminalPeerActionPopup.swift */,
+				TERM08 /* TerminalChatBubble.swift */,
+				RADAR00 /* RadarView.swift */,
+				RADAR03 /* PeerDetailCard.swift */,
 			);
 			name = Components;
 			path = Components;
@@ -105,9 +125,18 @@
 				GRP003 /* App */,
 				GRP004 /* ViewModels */,
 				GRP005 /* Views */,
+				GRP009 /* Services */,
 				GRP008 /* Resources */,
 			);
 			path = MeshStealth;
+			sourceTree = "<group>";
+		};
+		GRP009 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				RADAR05 /* PeerNicknameStore.swift */,
+			);
+			path = Services;
 			sourceTree = "<group>";
 		};
 		GRP003 /* App */ = {
@@ -123,6 +152,8 @@
 			children = (
 				SRC002 /* WalletViewModel.swift */,
 				SRC003 /* MeshViewModel.swift */,
+				SRC011 /* ChatViewModel.swift */,
+				SRC012 /* ChatNotifications.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -137,6 +168,7 @@
 				SRC008 /* SettingsView.swift */,
 				SRC009 /* WalletBackupView.swift */,
 				SRC010 /* ActivityView.swift */,
+				SRC013 /* ChatView.swift */,
 				0DF132E8BD6D9CFBD8A2CC7E /* Components */,
 			);
 			path = Views;
@@ -244,6 +276,8 @@
 				APP001 /* MeshStealthApp.swift in Sources */,
 				APP002 /* WalletViewModel.swift in Sources */,
 				APP003 /* MeshViewModel.swift in Sources */,
+				APP012 /* ChatViewModel.swift in Sources */,
+				APP013 /* ChatNotifications.swift in Sources */,
 				APP004 /* WalletView.swift in Sources */,
 				APP005 /* NearbyPeersView.swift in Sources */,
 				APP006 /* SendPaymentView.swift in Sources */,
@@ -262,6 +296,12 @@
 				TERM14 /* TerminalButtons.swift in Sources */,
 				TERM15 /* TerminalInputs.swift in Sources */,
 				TERM16 /* TerminalWalletContainer.swift in Sources */,
+				APP014 /* ChatView.swift in Sources */,
+				TERM17 /* TerminalPeerActionPopup.swift in Sources */,
+				TERM18 /* TerminalChatBubble.swift in Sources */,
+				RADAR01 /* RadarView.swift in Sources */,
+				RADAR02 /* PeerDetailCard.swift in Sources */,
+				RADAR04 /* PeerNicknameStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
