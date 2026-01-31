@@ -142,17 +142,42 @@ struct NearbyPeersView: View {
             RadarView(peers: meshViewModel.nearbyPeers) { peer in
                 selectPeerForDetail(peer)
             }
-            .padding(24)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 16)
 
-            // Closest peer quick info
+            // Closest peer quick info or searching indicator
             if let closest = meshViewModel.closestPeer {
                 closestPeerQuickInfo(closest)
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 16)
+            } else if meshViewModel.isActive {
+                searchingIndicator
+                    .padding(.horizontal, 16)
             }
 
             Spacer()
         }
+    }
+
+    @ViewBuilder
+    private var searchingIndicator: some View {
+        HStack(spacing: 12) {
+            Text(">")
+                .foregroundColor(TerminalPalette.cyan)
+            Text("SEARCHING FOR NODES")
+                .foregroundColor(TerminalPalette.textDim)
+            TerminalLoadingDots(color: TerminalPalette.textDim)
+            Spacer()
+        }
+        .font(TerminalTypography.body(12))
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 2)
+                .fill(TerminalPalette.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2)
+                        .stroke(TerminalPalette.border, lineWidth: 1)
+                )
+        )
     }
 
     @ViewBuilder
