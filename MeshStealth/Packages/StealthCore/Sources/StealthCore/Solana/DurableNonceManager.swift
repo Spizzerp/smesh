@@ -345,9 +345,7 @@ public actor DurableNonceManager {
         // 2: System Program (readonly, unsigned)
         // 3: RecentBlockhashes sysvar (readonly, unsigned) - required for InitializeNonceAccount
         // 4: Rent sysvar (readonly, unsigned) - required for InitializeNonceAccount
-        let recentBlockhashesVar = Data(base58Decoding: "SysvarRecentB1telephones11111111111111111")
-            ?? Data(base58Decoding: "SysvarRecentBLfefeeeeoooooooo1111111111111")
-            ?? sysvarRecentBlockhashesID()
+        let recentBlockhashesVar = sysvarRecentBlockhashesID()
         let rentSysvar = sysvarRentID()
 
         let accountKeys = [
@@ -426,25 +424,16 @@ public actor DurableNonceManager {
         return txData.base64EncodedString()
     }
 
-    /// Sysvar addresses
+    /// Sysvar addresses (well-known Solana addresses)
+    private static let sysvarRecentBlockhashesAddress = "SysvarRecentB1ockHashes11111111111111111111"
+    private static let sysvarRentAddress = "SysvarRent111111111111111111111111111111111"
+
     private func sysvarRecentBlockhashesID() -> Data {
-        // SysvarRecentB1ockHashes11111111111111111111
-        Data([
-            0x06, 0xa7, 0xd5, 0x17, 0x18, 0x7b, 0xd1, 0x60,
-            0x35, 0xfe, 0x6b, 0x71, 0x7f, 0x1e, 0x17, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-        ])
+        Data(base58Decoding: Self.sysvarRecentBlockhashesAddress) ?? Data(repeating: 0, count: 32)
     }
 
     private func sysvarRentID() -> Data {
-        // SysvarRent111111111111111111111111111111111
-        Data([
-            0x06, 0xa7, 0xd5, 0x17, 0x18, 0x7b, 0xd1, 0x5b,
-            0xd4, 0x57, 0xf2, 0xd2, 0xfc, 0x1a, 0xee, 0xec,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-        ])
+        Data(base58Decoding: Self.sysvarRentAddress) ?? Data(repeating: 0, count: 32)
     }
 
     // MARK: - Persistence
