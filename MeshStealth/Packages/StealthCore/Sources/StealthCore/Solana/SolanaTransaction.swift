@@ -69,6 +69,36 @@ public struct SolanaTransaction {
         let numReadonlyUnsignedAccounts: UInt8
     }
 
+    // MARK: - System Program Instruction Indices
+
+    /// AdvanceNonceAccount instruction index (System Program)
+    private static let advanceNonceAccountIndex: UInt32 = 4
+
+    // MARK: - Sysvar Addresses
+
+    /// RecentBlockhashes sysvar (required for nonce instructions)
+    public static let sysvarRecentBlockhashesId: Data = {
+        // SysvarRecentB1ockHashes11111111111111111111
+        var data = Data(repeating: 0, count: 32)
+        // Base58: SysvarRecentB1ockHashes11111111111111111111
+        data[0] = 0x06
+        data[1] = 0xa7
+        data[2] = 0xd5
+        data[3] = 0x17
+        data[4] = 0x18
+        data[5] = 0x7b
+        data[6] = 0xd1
+        data[7] = 0x60
+        data[8] = 0x35
+        data[9] = 0xfe
+        data[10] = 0x6b
+        data[11] = 0x71
+        data[12] = 0x7f
+        data[13] = 0x1e
+        data[14] = 0x17
+        return data
+    }()
+
     // MARK: - Transaction Building
 
     /// Build a SOL transfer transaction
@@ -131,6 +161,103 @@ public struct SolanaTransaction {
             accountKeys: accountKeys,
             recentBlockhash: blockhashData,
             instructions: [instruction]
+        )
+    }
+
+    /// Build a durable nonce transfer transaction
+    /// Uses a durable nonce as the "blockhash" so the transaction never expires.
+    /// The first instruction must be AdvanceNonceAccount.
+    ///
+    /// - Parameters:
+    ///   - from: Sender's 32-byte public key (must also be nonce authority)
+    ///   - to: Recipient's 32-byte public key
+    ///   - lamports: Amount to transfer in lamports
+    ///   - nonceAccount: Nonce account's 32-byte public key
+    ///   - nonceAuthority: Authority's 32-byte public key (same as `from` for our use case)
+    ///   - nonceValue: Current nonce value (used as blockhash)
+    /// - Returns: Unsigned transaction message
+    public static func buildDurableNonceTransfer(
+        from: Data,
+        to: Data,
+        lamports: UInt64,
+        nonceAccount: Data,
+        nonceAuthority: Data,
+        nonceValue: String
+    ) throws -> Message {
+        guard from.count == 32 else {
+            throw TransactionError.invalidPublicKey("From key must be 32 bytes")
+        }
+        guard to.count == 32 else {
+            throw TransactionError.invalidPublicKey("To key must be 32 bytes")
+        }
+        guard nonceAccount.count == 32 else {
+            throw TransactionError.invalidPublicKey("Nonce account key must be 32 bytes")
+        }
+        guard nonceAuthority.count == 32 else {
+            throw TransactionError.invalidPublicKey("Nonce authority key must be 32 bytes")
+        }
+
+        // Decode nonce value as blockhash (it's a base58 string)
+        guard let nonceBlockhash = Data(base58Decoding: nonceValue), nonceBlockhash.count == 32 else {
+            throw TransactionError.invalidBlockhash
+        }
+
+        // Account keys order:
+        // 0: from (signer, writable) - fee payer and sender
+        // 1: nonceAccount (writable) - nonce account to advance
+        // 2: to (writable) - recipient
+        // 3: System Program (readonly, unsigned)
+        // 4: RecentBlockhashes sysvar (readonly, unsigned) - required for AdvanceNonceAccount
+
+        let accountKeys = [
+            from,
+            nonceAccount,
+            to,
+            systemProgramId,
+            sysvarRecentBlockhashesId
+        ]
+
+        // Header:
+        // - 1 required signature (from/authority)
+        // - 0 readonly signed accounts
+        // - 2 readonly unsigned accounts (System Program + RecentBlockhashes)
+        let header = MessageHeader(
+            numRequiredSignatures: 1,
+            numReadonlySignedAccounts: 0,
+            numReadonlyUnsignedAccounts: 2
+        )
+
+        // Instruction 1: AdvanceNonceAccount
+        // Data: [4 bytes LE: instruction index (4)]
+        var advanceNonceData = Data()
+        var advanceIndex = advanceNonceAccountIndex
+        advanceNonceData.append(contentsOf: withUnsafeBytes(of: &advanceIndex) { Data($0) })
+
+        let advanceNonceInstruction = CompiledInstruction(
+            programIdIndex: 3,  // System Program at index 3
+            accountIndices: [1, 4, 0],  // nonceAccount, RecentBlockhashes, authority
+            data: advanceNonceData
+        )
+
+        // Instruction 2: Transfer
+        // Data: [4 bytes LE: instruction index (2)] [8 bytes LE: lamports]
+        var transferData = Data()
+        var transferIndex = transferInstructionIndex
+        transferData.append(contentsOf: withUnsafeBytes(of: &transferIndex) { Data($0) })
+        var amount = lamports
+        transferData.append(contentsOf: withUnsafeBytes(of: &amount) { Data($0) })
+
+        let transferInstruction = CompiledInstruction(
+            programIdIndex: 3,  // System Program at index 3
+            accountIndices: [0, 2],  // from, to
+            data: transferData
+        )
+
+        return Message(
+            header: header,
+            accountKeys: accountKeys,
+            recentBlockhash: nonceBlockhash,  // Use nonce value as "blockhash"
+            instructions: [advanceNonceInstruction, transferInstruction]
         )
     }
 

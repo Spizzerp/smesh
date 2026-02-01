@@ -21,6 +21,16 @@ public let MESH_DISCOVERY_CHARACTERISTIC_UUID = "7E57EA17-1234-5678-9ABC-DEF0123
 
 // MARK: - Mesh Stealth Payload
 
+/// Protocol version for MeshStealthPayload
+/// - Version 1: Original format (sender settles)
+/// - Version 2: Pre-signed transaction support (receiver can settle)
+public enum MeshPayloadProtocolVersion: Int, Codable, Sendable {
+    case v1 = 1  // Original: sender settles when online
+    case v2 = 2  // Pre-signed tx: receiver can settle
+
+    public static let current: MeshPayloadProtocolVersion = .v2
+}
+
 /// Payload for stealth payment transmitted over mesh network
 /// Contains all data needed for recipient to claim funds when online
 public struct MeshStealthPayload: Codable, Sendable, Equatable {
@@ -45,6 +55,23 @@ public struct MeshStealthPayload: Codable, Sendable, Equatable {
     /// Sender-provided memo (optional, for recipient context)
     public let memo: String?
 
+    // MARK: - Pre-Signed Transaction Support (v2)
+
+    /// Protocol version (1 = sender settles, 2 = supports receiver settlement)
+    public let protocolVersion: MeshPayloadProtocolVersion
+
+    /// Pre-signed transaction (base64 encoded) that receiver can broadcast
+    /// Only present in v2 payloads when sender had a durable nonce available
+    public let preSignedTransaction: String?
+
+    /// Nonce account address used for the pre-signed transaction
+    /// Receiver uses this to track which nonce was consumed
+    public let nonceAccountAddress: String?
+
+    /// When the pre-signed transaction was created
+    /// Helps receiver decide if tx might have been superseded
+    public let preSignedAt: Date?
+
     public init(
         stealthAddress: String,
         ephemeralPublicKey: Data,
@@ -52,7 +79,11 @@ public struct MeshStealthPayload: Codable, Sendable, Equatable {
         amount: UInt64,
         tokenMint: String? = nil,
         viewTag: UInt8,
-        memo: String? = nil
+        memo: String? = nil,
+        protocolVersion: MeshPayloadProtocolVersion = .v1,
+        preSignedTransaction: String? = nil,
+        nonceAccountAddress: String? = nil,
+        preSignedAt: Date? = nil
     ) {
         self.stealthAddress = stealthAddress
         self.ephemeralPublicKey = ephemeralPublicKey
@@ -61,6 +92,10 @@ public struct MeshStealthPayload: Codable, Sendable, Equatable {
         self.tokenMint = tokenMint
         self.viewTag = viewTag
         self.memo = memo
+        self.protocolVersion = protocolVersion
+        self.preSignedTransaction = preSignedTransaction
+        self.nonceAccountAddress = nonceAccountAddress
+        self.preSignedAt = preSignedAt
     }
 
     /// Create from a StealthAddressResult
@@ -68,7 +103,9 @@ public struct MeshStealthPayload: Codable, Sendable, Equatable {
         from result: StealthAddressResult,
         amount: UInt64,
         tokenMint: String? = nil,
-        memo: String? = nil
+        memo: String? = nil,
+        preSignedTransaction: String? = nil,
+        nonceAccountAddress: String? = nil
     ) {
         self.stealthAddress = result.stealthAddress
         self.ephemeralPublicKey = result.ephemeralPublicKey
@@ -77,11 +114,30 @@ public struct MeshStealthPayload: Codable, Sendable, Equatable {
         self.tokenMint = tokenMint
         self.viewTag = result.viewTag
         self.memo = memo
+
+        // Set v2 fields based on whether pre-signed tx is provided
+        if preSignedTransaction != nil {
+            self.protocolVersion = .v2
+            self.preSignedTransaction = preSignedTransaction
+            self.nonceAccountAddress = nonceAccountAddress
+            self.preSignedAt = Date()
+        } else {
+            self.protocolVersion = .v1
+            self.preSignedTransaction = nil
+            self.nonceAccountAddress = nil
+            self.preSignedAt = nil
+        }
     }
 
     /// Whether this payload uses hybrid (post-quantum) mode
     public var isHybrid: Bool {
         mlkemCiphertext != nil
+    }
+
+    /// Whether this payload supports receiver settlement
+    /// Receiver can broadcast the pre-signed transaction when they come online
+    public var supportsReceiverSettlement: Bool {
+        protocolVersion == .v2 && preSignedTransaction != nil
     }
 
     /// Estimated size in bytes when serialized
@@ -560,6 +616,8 @@ public enum MeshError: Error, LocalizedError {
     case peerNotFound(String)
     case connectionFailed(Error)
     case transmissionFailed(Error)
+    case writeTimeout
+    case serviceNotReady
 
     public var errorDescription: String? {
         switch self {
@@ -587,6 +645,10 @@ public enum MeshError: Error, LocalizedError {
             return "Connection failed: \(error.localizedDescription)"
         case .transmissionFailed(let error):
             return "Transmission failed: \(error.localizedDescription)"
+        case .writeTimeout:
+            return "Write operation timed out"
+        case .serviceNotReady:
+            return "BLE service is not ready"
         }
     }
 }

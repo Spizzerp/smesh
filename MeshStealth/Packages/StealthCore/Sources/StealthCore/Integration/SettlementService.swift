@@ -58,6 +58,14 @@ public struct SettlementConfiguration: Sendable {
     )
 }
 
+/// Who settled the payment
+public enum SettledBy: String, Codable, Sendable {
+    case sender    // Sender came online and executed tx
+    case receiver  // Receiver broadcast pre-signed tx
+    case relay     // A relay node broadcast the tx
+    case unknown   // Legacy or untracked
+}
+
 /// Result of a settlement attempt
 public struct SettlementResult: Sendable {
     public let paymentId: UUID
@@ -65,19 +73,22 @@ public struct SettlementResult: Sendable {
     public let signature: String?
     public let error: Error?
     public let attemptNumber: Int
+    public let settledBy: SettledBy
 
     public init(
         paymentId: UUID,
         success: Bool,
         signature: String? = nil,
         error: Error? = nil,
-        attemptNumber: Int = 1
+        attemptNumber: Int = 1,
+        settledBy: SettledBy = .unknown
     ) {
         self.paymentId = paymentId
         self.success = success
         self.signature = signature
         self.error = error
         self.attemptNumber = attemptNumber
+        self.settledBy = settledBy
     }
 }
 
@@ -205,6 +216,7 @@ public class SettlementService: ObservableObject {
     }
 
     /// Settle a single payment
+    /// Tries receiver settlement first (pre-signed tx), then falls back to existing flow
     /// Settles to a NEW stealth address (privacy hop) rather than main wallet
     public func settlePayment(_ payment: PendingPayment) async -> SettlementResult {
         let attemptNumber = payment.settlementAttempts + 1
@@ -212,14 +224,71 @@ public class SettlementService: ObservableObject {
         // Mark as settling
         walletManager.updatePaymentStatus(id: payment.id, status: .settling)
 
+        // STEP 0: Try receiver settlement first if pre-signed tx available
+        if let preSignedTx = payment.preSignedTransaction {
+            DebugLogger.log("[SETTLE] Attempting receiver settlement with pre-signed tx", category: "SETTLE")
+
+            do {
+                let txSignature = try await rpcClient.sendTransaction(preSignedTx)
+                DebugLogger.log("[SETTLE] Pre-signed tx broadcast: \(txSignature)", category: "SETTLE")
+
+                // Wait for confirmation
+                try await rpcClient.waitForConfirmation(signature: txSignature, timeout: config.transactionTimeout)
+                DebugLogger.log("[SETTLE] Pre-signed tx confirmed!", category: "SETTLE")
+
+                // Success! Funds are now at stealth address
+                // Mark payment as awaiting funds (needs another settlement pass to move to privacy hop)
+                walletManager.updatePaymentStatus(
+                    id: payment.id,
+                    status: .received,  // Reset to received so next pass processes it
+                    signature: txSignature
+                )
+
+                return SettlementResult(
+                    paymentId: payment.id,
+                    success: true,
+                    signature: txSignature,
+                    attemptNumber: attemptNumber,
+                    settledBy: .receiver
+                )
+
+            } catch let error as FaucetError {
+                // Check if nonce was already consumed (sender may have settled)
+                if isNonceConsumedError(error) {
+                    DebugLogger.log("[SETTLE] Nonce already consumed - checking if funds arrived", category: "SETTLE")
+
+                    // Check if funds arrived at stealth address
+                    do {
+                        let balance = try await rpcClient.getBalance(address: payment.stealthAddress)
+                        if balance >= payment.amount - 10000 {  // Allow for small fee differences
+                            DebugLogger.log("[SETTLE] Funds present - sender already settled", category: "SETTLE")
+                            // Continue to normal settlement flow below
+                        } else {
+                            DebugLogger.log("[SETTLE] No funds at stealth address - payment may have failed", category: "SETTLE")
+                            throw SettlementError.transactionFailed("Pre-signed tx consumed but no funds arrived")
+                        }
+                    } catch {
+                        DebugLogger.error("[SETTLE] Error checking funds after nonce consumed", error: error, category: "SETTLE")
+                    }
+                } else {
+                    DebugLogger.log("[SETTLE] Pre-signed tx failed: \(error.localizedDescription)", category: "SETTLE")
+                    // Continue to existing settlement flow
+                }
+            } catch {
+                DebugLogger.log("[SETTLE] Pre-signed tx failed: \(error.localizedDescription)", category: "SETTLE")
+                // Continue to existing settlement flow
+            }
+        }
+
+        // EXISTING FLOW: Derive spending key and transfer out
         do {
             // 1. Derive the spending private key
-            print("[SETTLE] Deriving spending key for payment \(payment.id)")
+            DebugLogger.log("[SETTLE] Deriving spending key for payment \(payment.id)")
             let spendingKey = try walletManager.deriveSpendingKey(for: payment)
 
             // 2. Get current balance of stealth address
             let balance = try await rpcClient.getBalance(address: payment.stealthAddress)
-            print("[SETTLE] Balance: \(balance) lamports")
+            DebugLogger.log("[SETTLE] Balance: \(balance) lamports")
 
             guard balance >= config.minBalanceForSettlement else {
                 throw SettlementError.insufficientBalance(
@@ -230,7 +299,7 @@ public class SettlementService: ObservableObject {
 
             // 3. Generate new stealth destination (privacy hop to ourselves)
             let destination = try getSettlementDestination()
-            print("[SETTLE] New stealth destination: \(destination.address)")
+            DebugLogger.log("[SETTLE] New stealth destination: \(destination.address)")
 
             // 4. Calculate transfer amount (leave fee for transaction)
             let transferAmount = balance - estimatedFee
@@ -242,7 +311,7 @@ public class SettlementService: ObservableObject {
                 amount: transferAmount,
                 spendingKey: spendingKey
             )
-            print("[SETTLE] Transaction confirmed: \(signature)")
+            DebugLogger.log("[SETTLE] Transaction confirmed: \(signature)")
 
             // 6. Create new PendingPayment for the destination
             let newPayment = PendingPayment(
@@ -259,7 +328,7 @@ public class SettlementService: ObservableObject {
                 parentPaymentId: payment.id
             )
             walletManager.addPendingPayment(newPayment)
-            print("[SETTLE] Created new payment at destination: \(newPayment.id)")
+            DebugLogger.log("[SETTLE] Created new payment at destination: \(newPayment.id)")
 
             // 7. Mark original as settled
             walletManager.updatePaymentStatus(
@@ -281,11 +350,12 @@ public class SettlementService: ObservableObject {
                 paymentId: payment.id,
                 success: true,
                 signature: signature,
-                attemptNumber: attemptNumber
+                attemptNumber: attemptNumber,
+                settledBy: .sender  // We derived the key and settled ourselves
             )
 
         } catch {
-            print("[SETTLE] Settlement failed: \(error)")
+            DebugLogger.log("[SETTLE] Settlement failed: \(error)")
 
             // Calculate next retry time with exponential backoff
             let delay = calculateBackoffDelay(attempt: attemptNumber)
@@ -303,8 +373,28 @@ public class SettlementService: ObservableObject {
                 paymentId: payment.id,
                 success: false,
                 error: error,
-                attemptNumber: attemptNumber
+                attemptNumber: attemptNumber,
+                settledBy: .unknown
             )
+        }
+    }
+
+    /// Check if error indicates nonce was already consumed
+    private func isNonceConsumedError(_ error: FaucetError) -> Bool {
+        switch error {
+        case .rpcError(_, let message):
+            // Common error messages for consumed nonce
+            let lowercased = message.lowercased()
+            return lowercased.contains("blockhash not found") ||
+                   lowercased.contains("nonce") ||
+                   lowercased.contains("already processed") ||
+                   lowercased.contains("transaction already processed")
+        case .transactionFailed(let reason):
+            let lowercased = reason.lowercased()
+            return lowercased.contains("nonce") ||
+                   lowercased.contains("blockhash")
+        default:
+            return false
         }
     }
 
@@ -326,13 +416,13 @@ public class SettlementService: ObservableObject {
         amount: UInt64,
         spendingKey: Data
     ) async throws -> String {
-        print("[SETTLE-TX] Building transfer from \(sourceAddress) to \(destinationAddress)")
-        print("[SETTLE-TX] Amount: \(amount) lamports")
+        DebugLogger.log("[SETTLE-TX] Building transfer from \(sourceAddress) to \(destinationAddress)")
+        DebugLogger.log("[SETTLE-TX] Amount: \(amount) lamports")
 
         // Check if privacy routing should be used
         if let privacyService = privacyRoutingService,
            privacyService.shouldUsePrivacyRouting(for: amount) {
-            print("[SETTLE-TX] Using privacy routing via \(privacyService.selectedProtocol.displayName)")
+            DebugLogger.log("[SETTLE-TX] Using privacy routing via \(privacyService.selectedProtocol.displayName)")
 
             do {
                 let txSignature = try await privacyService.routeTransfer(
@@ -341,12 +431,12 @@ public class SettlementService: ObservableObject {
                     amount: amount,
                     spendingKey: spendingKey
                 )
-                print("[SETTLE-TX] Privacy-routed transaction: \(txSignature)")
+                DebugLogger.log("[SETTLE-TX] Privacy-routed transaction: \(txSignature)")
                 return txSignature
             } catch {
                 // Check if fallback is enabled
                 if privacyService.configuration.fallbackToDirect {
-                    print("[SETTLE-TX] Privacy routing failed, falling back to direct: \(error)")
+                    DebugLogger.log("[SETTLE-TX] Privacy routing failed, falling back to direct: \(error)")
                     // Continue with direct transfer below
                 } else {
                     throw SettlementError.transactionFailed("Privacy routing failed: \(error.localizedDescription)")
@@ -355,7 +445,7 @@ public class SettlementService: ObservableObject {
         }
 
         // Direct transfer (no privacy routing)
-        print("[SETTLE-TX] Using direct transfer")
+        DebugLogger.log("[SETTLE-TX] Using direct transfer")
 
         // 1. Create wallet from spending key (raw scalar, not seed-expanded)
         let stealthWallet: SolanaWallet
@@ -368,9 +458,9 @@ public class SettlementService: ObservableObject {
         // 2. Verify derived address matches source
         let derivedAddress = await stealthWallet.address
         guard derivedAddress == sourceAddress else {
-            print("[SETTLE-TX] Address mismatch!")
-            print("[SETTLE-TX]   Expected: \(sourceAddress)")
-            print("[SETTLE-TX]   Derived:  \(derivedAddress)")
+            DebugLogger.log("[SETTLE-TX] Address mismatch!")
+            DebugLogger.log("[SETTLE-TX]   Expected: \(sourceAddress)")
+            DebugLogger.log("[SETTLE-TX]   Derived:  \(derivedAddress)")
             throw SettlementError.transactionFailed("Spending key mismatch - derived address doesn't match source")
         }
 
