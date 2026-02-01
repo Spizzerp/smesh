@@ -85,6 +85,271 @@ public final class WebViewBridge: NSObject {
         </head>
         <body>
             <script>
+            // ============================================
+            // Node.js Polyfills for WKWebView
+            // Required by ShadowWire SDK (blake-hash, etc.)
+            // ============================================
+
+            // Buffer polyfill (comprehensive implementation)
+            (function() {
+                if (typeof Buffer !== 'undefined') return;
+
+                function Buffer(arg, encodingOrOffset, length) {
+                    if (typeof arg === 'number') {
+                        return new Uint8Array(arg);
+                    }
+                    if (typeof arg === 'string') {
+                        return Buffer.from(arg, encodingOrOffset);
+                    }
+                    if (ArrayBuffer.isView(arg) || arg instanceof ArrayBuffer) {
+                        return new Uint8Array(arg);
+                    }
+                    if (Array.isArray(arg)) {
+                        return new Uint8Array(arg);
+                    }
+                    return new Uint8Array(0);
+                }
+
+                Buffer.from = function(data, encoding) {
+                    if (typeof data === 'string') {
+                        encoding = encoding || 'utf8';
+                        if (encoding === 'hex') {
+                            var bytes = [];
+                            for (var i = 0; i < data.length; i += 2) {
+                                bytes.push(parseInt(data.substr(i, 2), 16));
+                            }
+                            return new Uint8Array(bytes);
+                        } else if (encoding === 'base64') {
+                            var binary = atob(data);
+                            var bytes = new Uint8Array(binary.length);
+                            for (var i = 0; i < binary.length; i++) {
+                                bytes[i] = binary.charCodeAt(i);
+                            }
+                            return bytes;
+                        } else {
+                            // utf8
+                            var encoder = new TextEncoder();
+                            return encoder.encode(data);
+                        }
+                    }
+                    if (ArrayBuffer.isView(data)) {
+                        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+                    }
+                    if (data instanceof ArrayBuffer) {
+                        return new Uint8Array(data);
+                    }
+                    if (Array.isArray(data)) {
+                        return new Uint8Array(data);
+                    }
+                    return new Uint8Array(0);
+                };
+
+                Buffer.alloc = function(size, fill, encoding) {
+                    var buf = new Uint8Array(size);
+                    if (fill !== undefined) {
+                        if (typeof fill === 'number') {
+                            buf.fill(fill);
+                        } else if (typeof fill === 'string') {
+                            var fillBuf = Buffer.from(fill, encoding);
+                            for (var i = 0; i < size; i++) {
+                                buf[i] = fillBuf[i % fillBuf.length];
+                            }
+                        }
+                    }
+                    return buf;
+                };
+
+                Buffer.allocUnsafe = Buffer.alloc;
+                Buffer.allocUnsafeSlow = Buffer.alloc;
+
+                Buffer.isBuffer = function(obj) {
+                    return obj instanceof Uint8Array;
+                };
+
+                Buffer.isEncoding = function(encoding) {
+                    return ['utf8', 'utf-8', 'hex', 'base64', 'ascii', 'binary', 'latin1'].indexOf(encoding.toLowerCase()) !== -1;
+                };
+
+                Buffer.byteLength = function(string, encoding) {
+                    if (typeof string !== 'string') {
+                        return string.length || string.byteLength || 0;
+                    }
+                    return Buffer.from(string, encoding).length;
+                };
+
+                Buffer.concat = function(list, totalLength) {
+                    if (!Array.isArray(list)) return new Uint8Array(0);
+                    if (totalLength === undefined) {
+                        totalLength = list.reduce(function(acc, buf) { return acc + buf.length; }, 0);
+                    }
+                    var result = new Uint8Array(totalLength);
+                    var offset = 0;
+                    for (var i = 0; i < list.length && offset < totalLength; i++) {
+                        var buf = list[i];
+                        result.set(buf.subarray(0, Math.min(buf.length, totalLength - offset)), offset);
+                        offset += buf.length;
+                    }
+                    return result;
+                };
+
+                Buffer.compare = function(a, b) {
+                    for (var i = 0; i < Math.min(a.length, b.length); i++) {
+                        if (a[i] < b[i]) return -1;
+                        if (a[i] > b[i]) return 1;
+                    }
+                    return a.length - b.length;
+                };
+
+                // Add instance methods to Uint8Array prototype for Buffer compatibility
+                var proto = Uint8Array.prototype;
+
+                if (!proto.toString || proto.toString === Object.prototype.toString) {
+                    proto.toString = function(encoding) {
+                        encoding = encoding || 'utf8';
+                        if (encoding === 'hex') {
+                            return Array.from(this).map(function(b) {
+                                return b.toString(16).padStart(2, '0');
+                            }).join('');
+                        } else if (encoding === 'base64') {
+                            var binary = '';
+                            for (var i = 0; i < this.length; i++) {
+                                binary += String.fromCharCode(this[i]);
+                            }
+                            return btoa(binary);
+                        } else {
+                            var decoder = new TextDecoder();
+                            return decoder.decode(this);
+                        }
+                    };
+                }
+
+                if (!proto.write) {
+                    proto.write = function(string, offset, length, encoding) {
+                        offset = offset || 0;
+                        var buf = Buffer.from(string, encoding);
+                        length = length || buf.length;
+                        for (var i = 0; i < length && offset + i < this.length; i++) {
+                            this[offset + i] = buf[i];
+                        }
+                        return Math.min(length, buf.length);
+                    };
+                }
+
+                if (!proto.copy) {
+                    proto.copy = function(target, targetStart, sourceStart, sourceEnd) {
+                        targetStart = targetStart || 0;
+                        sourceStart = sourceStart || 0;
+                        sourceEnd = sourceEnd || this.length;
+                        for (var i = 0; i < sourceEnd - sourceStart; i++) {
+                            target[targetStart + i] = this[sourceStart + i];
+                        }
+                        return sourceEnd - sourceStart;
+                    };
+                }
+
+                if (!proto.equals) {
+                    proto.equals = function(other) {
+                        if (this.length !== other.length) return false;
+                        for (var i = 0; i < this.length; i++) {
+                            if (this[i] !== other[i]) return false;
+                        }
+                        return true;
+                    };
+                }
+
+                if (!proto.readUInt32BE) {
+                    proto.readUInt32BE = function(offset) {
+                        return (this[offset] << 24) | (this[offset + 1] << 16) | (this[offset + 2] << 8) | this[offset + 3];
+                    };
+                }
+
+                if (!proto.readUInt32LE) {
+                    proto.readUInt32LE = function(offset) {
+                        return this[offset] | (this[offset + 1] << 8) | (this[offset + 2] << 16) | (this[offset + 3] << 24);
+                    };
+                }
+
+                if (!proto.writeUInt32BE) {
+                    proto.writeUInt32BE = function(value, offset) {
+                        this[offset] = (value >>> 24) & 0xff;
+                        this[offset + 1] = (value >>> 16) & 0xff;
+                        this[offset + 2] = (value >>> 8) & 0xff;
+                        this[offset + 3] = value & 0xff;
+                        return offset + 4;
+                    };
+                }
+
+                if (!proto.writeUInt32LE) {
+                    proto.writeUInt32LE = function(value, offset) {
+                        this[offset] = value & 0xff;
+                        this[offset + 1] = (value >>> 8) & 0xff;
+                        this[offset + 2] = (value >>> 16) & 0xff;
+                        this[offset + 3] = (value >>> 24) & 0xff;
+                        return offset + 4;
+                    };
+                }
+
+                window.Buffer = Buffer;
+                console.log('[Polyfill] Buffer polyfill loaded');
+            })();
+
+            // Process polyfill
+            if (typeof process === 'undefined') {
+                window.process = {
+                    env: { NODE_ENV: 'production' },
+                    browser: true,
+                    version: 'v18.0.0',
+                    versions: { node: '18.0.0' },
+                    platform: 'darwin',
+                    nextTick: function(fn) { setTimeout(fn, 0); },
+                    cwd: function() { return '/'; },
+                    exit: function() {},
+                    on: function() { return this; },
+                    once: function() { return this; },
+                    off: function() { return this; },
+                    emit: function() { return false; }
+                };
+                console.log('[Polyfill] process polyfill loaded');
+            }
+
+            // Global polyfill
+            if (typeof global === 'undefined') {
+                window.global = window;
+            }
+
+            // ============================================
+            // End of Polyfills
+            // ============================================
+
+            // Capture console.log and send to native for debugging
+            (function() {
+                var origLog = console.log;
+                var origError = console.error;
+                var origWarn = console.warn;
+
+                function sendLog(level, args) {
+                    try {
+                        var msg = Array.prototype.slice.call(args).map(function(a) {
+                            if (typeof a === 'object') {
+                                try { return JSON.stringify(a); } catch(e) { return String(a); }
+                            }
+                            return String(a);
+                        }).join(' ');
+                        window.webkit.messageHandlers.nativeCallback.postMessage({
+                            type: 'console',
+                            level: level,
+                            message: msg
+                        });
+                    } catch(e) {}
+                    // Also call original
+                    origLog.apply(console, args);
+                }
+
+                console.log = function() { sendLog('log', arguments); };
+                console.error = function() { sendLog('error', arguments); };
+                console.warn = function() { sendLog('warn', arguments); };
+            })();
+
             // Native callback helper
             window.sendToNative = function(callbackId, success, data, error) {
                 window.webkit.messageHandlers.nativeCallback.postMessage({
@@ -209,7 +474,7 @@ public final class WebViewBridge: NSObject {
             DebugLogger.log("[WebViewBridge] Sent chunk \(i + 1)/\(chunks.count)")
         }
 
-        // Decode and execute
+        // Decode and execute with error wrapper
         let executeScript = """
         (function() {
             try {
@@ -217,14 +482,168 @@ public final class WebViewBridge: NSObject {
                 var decoded = atob(base64);
                 delete window._sdkChunks;
 
+                console.log('[WebViewBridge] Decoded script length: ' + decoded.length + ' chars');
+
+                // Verify polyfills are available
+                console.log('[WebViewBridge] Checking polyfills before bundle execution:');
+                console.log('[WebViewBridge]   typeof Buffer: ' + (typeof Buffer));
+                console.log('[WebViewBridge]   typeof window.Buffer: ' + (typeof window.Buffer));
+                console.log('[WebViewBridge]   typeof process: ' + (typeof process));
+                console.log('[WebViewBridge]   typeof global: ' + (typeof global));
+
+                // Define Buffer inline if missing - must be in same script context as bundle
+                if (typeof Buffer === 'undefined') {
+                    console.log('[WebViewBridge] Buffer missing, defining inline polyfill...');
+
+                    // First define as a local variable, then assign to window
+                    var Buffer = function(arg, enc) {
+                        if (typeof arg === 'number') return new Uint8Array(arg);
+                        if (typeof arg === 'string') return Buffer.from(arg, enc);
+                        if (arg instanceof ArrayBuffer || ArrayBuffer.isView(arg)) return new Uint8Array(arg);
+                        if (Array.isArray(arg)) return new Uint8Array(arg);
+                        return new Uint8Array(0);
+                    };
+
+                    Buffer.from = function(data, enc) {
+                        if (typeof data === 'string') {
+                            enc = enc || 'utf8';
+                            if (enc === 'hex') {
+                                var b = [];
+                                for (var i = 0; i < data.length; i += 2) b.push(parseInt(data.substr(i, 2), 16));
+                                return new Uint8Array(b);
+                            } else if (enc === 'base64') {
+                                var bin = atob(data), arr = new Uint8Array(bin.length);
+                                for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+                                return arr;
+                            } else {
+                                return new TextEncoder().encode(data);
+                            }
+                        }
+                        if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+                        if (data instanceof ArrayBuffer) return new Uint8Array(data);
+                        if (Array.isArray(data)) return new Uint8Array(data);
+                        return new Uint8Array(0);
+                    };
+
+                    Buffer.alloc = function(size, fill) {
+                        var buf = new Uint8Array(size);
+                        if (typeof fill === 'number') buf.fill(fill);
+                        return buf;
+                    };
+                    Buffer.allocUnsafe = Buffer.alloc;
+                    Buffer.allocUnsafeSlow = Buffer.alloc;
+                    Buffer.isBuffer = function(obj) { return obj instanceof Uint8Array; };
+                    Buffer.isEncoding = function(e) { return ['utf8','utf-8','hex','base64','ascii'].indexOf((e||'').toLowerCase()) !== -1; };
+                    Buffer.byteLength = function(s, e) { return typeof s === 'string' ? Buffer.from(s, e).length : (s.length || s.byteLength || 0); };
+                    Buffer.concat = function(list, len) {
+                        if (!Array.isArray(list)) return new Uint8Array(0);
+                        len = len === undefined ? list.reduce(function(a,b){return a+b.length;},0) : len;
+                        var r = new Uint8Array(len), o = 0;
+                        for (var i = 0; i < list.length && o < len; i++) {
+                            r.set(list[i].subarray(0, Math.min(list[i].length, len-o)), o);
+                            o += list[i].length;
+                        }
+                        return r;
+                    };
+                    Buffer.compare = function(a,b) {
+                        for (var i = 0; i < Math.min(a.length, b.length); i++) {
+                            if (a[i] < b[i]) return -1;
+                            if (a[i] > b[i]) return 1;
+                        }
+                        return a.length - b.length;
+                    };
+
+                    // Add methods to Uint8Array prototype
+                    var p = Uint8Array.prototype;
+                    if (!p.readUInt32BE) p.readUInt32BE = function(o) { return (this[o]<<24)|(this[o+1]<<16)|(this[o+2]<<8)|this[o+3]; };
+                    if (!p.readUInt32LE) p.readUInt32LE = function(o) { return this[o]|(this[o+1]<<8)|(this[o+2]<<16)|(this[o+3]<<24); };
+                    if (!p.writeUInt32BE) p.writeUInt32BE = function(v,o) { this[o]=(v>>>24)&0xff; this[o+1]=(v>>>16)&0xff; this[o+2]=(v>>>8)&0xff; this[o+3]=v&0xff; return o+4; };
+                    if (!p.writeUInt32LE) p.writeUInt32LE = function(v,o) { this[o]=v&0xff; this[o+1]=(v>>>8)&0xff; this[o+2]=(v>>>16)&0xff; this[o+3]=(v>>>24)&0xff; return o+4; };
+                    if (!p.copy) p.copy = function(t,ts,ss,se) { ts=ts||0; ss=ss||0; se=se||this.length; for(var i=0;i<se-ss;i++) t[ts+i]=this[ss+i]; return se-ss; };
+                    if (!p.equals) p.equals = function(o) { if(this.length!==o.length)return false; for(var i=0;i<this.length;i++)if(this[i]!==o[i])return false; return true; };
+                    if (!p.slice) p.slice = function(s,e) { return this.subarray(s,e); };
+                    if (!p.fill) p.fill = function(v,s,e) { s=s||0; e=e||this.length; for(var i=s;i<e;i++) this[i]=v; return this; };
+
+                    // Make available globally - CRITICAL: must set window.Buffer so script element can see it
+                    window.Buffer = Buffer;
+                    if (typeof globalThis !== 'undefined') globalThis.Buffer = Buffer;
+                    if (typeof global !== 'undefined') global.Buffer = Buffer;
+
+                    console.log('[WebViewBridge] Buffer polyfill defined, typeof Buffer: ' + (typeof Buffer) + ', typeof window.Buffer: ' + (typeof window.Buffer));
+                }
+
+                // Also ensure process is defined
+                if (typeof process === 'undefined') {
+                    window.process = { env: { NODE_ENV: 'production' }, browser: true, version: 'v18.0.0' };
+                    if (typeof globalThis !== 'undefined') globalThis.process = window.process;
+                }
+                if (typeof global === 'undefined') {
+                    window.global = window;
+                    if (typeof globalThis !== 'undefined') globalThis.global = window;
+                }
+
+                console.log('[WebViewBridge] After inline polyfill - typeof Buffer: ' + (typeof Buffer));
+
+                // Wrap the entire bundle in try-catch for better error capture
+                // This modification happens before injection
+                var wrappedScript = 'try {\\n' + decoded + '\\n} catch(_bundleErr) { window._bundleLoadError = _bundleErr; console.log("[Bundle] Error: " + _bundleErr.message); console.log("[Bundle] Stack: " + (_bundleErr.stack || "").substring(0, 500)); }';
+
+                console.log('[WebViewBridge] About to inject wrapped script');
+
+                // Create and inject the script element
                 var script = document.createElement('script');
                 script.type = 'text/javascript';
-                script.text = decoded;
+                script.text = wrappedScript;
                 document.head.appendChild(script);
-                console.log('[WebViewBridge] Large bundle injected successfully');
-                return { success: true };
+
+                console.log('[WebViewBridge] Script element added to DOM');
+
+                // Check for bundle load error
+                if (window._bundleLoadError) {
+                    var err = window._bundleLoadError;
+                    console.log('[WebViewBridge] Bundle load error: ' + err.message);
+                    console.log('[WebViewBridge] Error name: ' + err.name);
+                    if (err.stack) {
+                        console.log('[WebViewBridge] Stack trace:');
+                        // Log stack in chunks for better readability
+                        var stack = err.stack.substring(0, 800);
+                        var lines = stack.split('\\n');
+                        for (var i = 0; i < Math.min(lines.length, 10); i++) {
+                            console.log('[WebViewBridge]   ' + lines[i]);
+                        }
+                    }
+                    return { success: false, error: err.message };
+                }
+
+                // Check what was defined
+                console.log('[WebViewBridge] After script execution:');
+                console.log('[WebViewBridge]   typeof ShadowWireBundle: ' + (typeof ShadowWireBundle));
+                console.log('[WebViewBridge]   typeof PrivacyCashBundle: ' + (typeof PrivacyCashBundle));
+                console.log('[WebViewBridge]   typeof window.shadowWire: ' + (typeof window.shadowWire));
+                console.log('[WebViewBridge]   typeof window.privacyCash: ' + (typeof window.privacyCash));
+
+                // If ShadowWireBundle exists but shadowWire doesn't, try to extract
+                if (typeof ShadowWireBundle !== 'undefined' && typeof window.shadowWire === 'undefined') {
+                    console.log('[WebViewBridge] Attempting extraction from ShadowWireBundle...');
+                    try {
+                        var keys = Object.keys(ShadowWireBundle || {}).slice(0, 10);
+                        console.log('[WebViewBridge] ShadowWireBundle keys: ' + keys.join(', '));
+
+                        var sw = ShadowWireBundle.shadowWire || ShadowWireBundle.default || ShadowWireBundle;
+                        if (sw && typeof sw.init === 'function') {
+                            window.shadowWire = sw;
+                            console.log('[WebViewBridge] Extracted shadowWire successfully');
+                        } else {
+                            console.log('[WebViewBridge] No init function found in extracted object');
+                        }
+                    } catch (extractErr) {
+                        console.log('[WebViewBridge] Extraction error: ' + extractErr.message);
+                    }
+                }
+
+                return { success: (typeof window.shadowWire !== 'undefined' || typeof window.privacyCash !== 'undefined') };
             } catch (e) {
-                console.log('[WebViewBridge] Script injection error: ' + e.message);
+                console.log('[WebViewBridge] Outer error: ' + e.message);
                 return { success: false, error: e.message };
             }
         })();
@@ -239,85 +658,83 @@ public final class WebViewBridge: NSObject {
         }
 
         // Give it time to execute - bundle footer code needs time to run
-        try await Task.sleep(nanoseconds: 1_000_000_000) // 1s (increased from 0.5s)
+        // ShadowWire bundle has async initialization that needs extra time
+        try await Task.sleep(nanoseconds: 2_000_000_000) // 2s (increased for async init)
 
         // Verify and ensure the global object is set
         let verifyScript = """
         (function() {
-            console.log('[WebViewBridge] Post-injection verification for \(globalObjectName)');
-            console.log('[WebViewBridge] typeof window.\(globalObjectName):', typeof window.\(globalObjectName));
+            try {
+                var debug = [];
+                var target = '\(globalObjectName)';
+                debug.push('target: ' + target);
 
-            // Check both bundle types
-            var hasShadowWireBundle = typeof ShadowWireBundle !== 'undefined';
-            var hasPrivacyCashBundle = typeof PrivacyCashBundle !== 'undefined';
-            console.log('[WebViewBridge] typeof ShadowWireBundle:', hasShadowWireBundle ? 'object' : 'undefined');
-            console.log('[WebViewBridge] typeof PrivacyCashBundle:', hasPrivacyCashBundle ? 'object' : 'undefined');
+                // Check what globals are defined (safely)
+                var hasSWB = (typeof ShadowWireBundle !== 'undefined');
+                var hasPCB = (typeof PrivacyCashBundle !== 'undefined');
+                var hasSW = (typeof window.shadowWire !== 'undefined');
+                var hasPC = (typeof window.privacyCash !== 'undefined');
 
-            // If window.shadowWire isn't set but ShadowWireBundle exists, set it now
-            if (typeof window.\(globalObjectName) === 'undefined') {
-                console.log('[WebViewBridge] window.\(globalObjectName) not set, attempting extraction...');
+                debug.push('ShadowWireBundle=' + hasSWB);
+                debug.push('PrivacyCashBundle=' + hasPCB);
+                debug.push('window.shadowWire=' + hasSW);
+                debug.push('window.privacyCash=' + hasPC);
 
-                // Try ShadowWireBundle
-                if (hasShadowWireBundle) {
-                    console.log('[WebViewBridge] Attempting to extract from ShadowWireBundle...');
-                    var keys = Object.keys(ShadowWireBundle).slice(0, 10);
-                    console.log('[WebViewBridge] ShadowWireBundle keys (first 10):', keys.join(', '));
+                // Check if our target is already set
+                var targetObj = window[target];
+                debug.push('window.' + target + '=' + (typeof targetObj));
 
-                    var target = ShadowWireBundle.shadowWire ||
-                                 ShadowWireBundle.default ||
-                                 ShadowWireBundle;
+                // If not set, try to extract from bundles
+                if (typeof targetObj === 'undefined') {
+                    debug.push('extracting...');
 
-                    if (target && typeof target.init === 'function') {
-                        window.\(globalObjectName) = target;
-                        console.log('[WebViewBridge] Set window.\(globalObjectName) from ShadowWireBundle');
-                    } else {
-                        console.log('[WebViewBridge] Direct extraction failed, searching nested...');
-                        // Look deeper for init method
-                        for (var key of Object.keys(ShadowWireBundle)) {
-                            var candidate = ShadowWireBundle[key];
-                            if (candidate && typeof candidate === 'object' && typeof candidate.init === 'function') {
-                                window.\(globalObjectName) = candidate;
-                                console.log('[WebViewBridge] Set window.\(globalObjectName) from ShadowWireBundle.' + key);
-                                break;
-                            }
+                    if (target === 'shadowWire' && hasSWB) {
+                        // The bundle's IIFE should have already set window.shadowWire
+                        // If not, try to get it from the bundle object
+                        if (typeof ShadowWireBundle === 'object') {
+                            var keys = [];
+                            try { keys = Object.keys(ShadowWireBundle).slice(0, 5); } catch(e) {}
+                            debug.push('SWB.keys=' + keys.join(','));
+                        }
+
+                        // Look for shadowWire inside ShadowWireBundle
+                        var sw = ShadowWireBundle.shadowWire || ShadowWireBundle.default || ShadowWireBundle;
+                        if (sw && typeof sw.init === 'function') {
+                            window.shadowWire = sw;
+                            targetObj = sw;
+                            debug.push('extracted from ShadowWireBundle');
+                        }
+                    }
+
+                    if (target === 'privacyCash' && hasPCB) {
+                        var pc = PrivacyCashBundle.privacyCash || PrivacyCashBundle.default || PrivacyCashBundle;
+                        if (pc && typeof pc.init === 'function') {
+                            window.privacyCash = pc;
+                            targetObj = pc;
+                            debug.push('extracted from PrivacyCashBundle');
                         }
                     }
                 }
 
-                // Try PrivacyCashBundle
-                if (hasPrivacyCashBundle && typeof window.\(globalObjectName) === 'undefined') {
-                    console.log('[WebViewBridge] Attempting to extract from PrivacyCashBundle...');
-                    var keys = Object.keys(PrivacyCashBundle).slice(0, 10);
-                    console.log('[WebViewBridge] PrivacyCashBundle keys (first 10):', keys.join(', '));
+                // Final check
+                var available = (typeof targetObj !== 'undefined' && typeof targetObj.init === 'function');
+                debug.push('available=' + available);
 
-                    var target = PrivacyCashBundle.privacyCash ||
-                                 PrivacyCashBundle.default ||
-                                 PrivacyCashBundle;
-
-                    if (target && typeof target.init === 'function') {
-                        window.\(globalObjectName) = target;
-                        console.log('[WebViewBridge] Set window.\(globalObjectName) from PrivacyCashBundle');
-                    }
+                // If available, list the methods
+                if (available && targetObj) {
+                    var methods = [];
+                    try {
+                        for (var k in targetObj) {
+                            if (typeof targetObj[k] === 'function') methods.push(k);
+                        }
+                        debug.push('methods=' + methods.slice(0, 8).join(','));
+                    } catch(e) {}
                 }
-            }
 
-            var result = typeof window.\(globalObjectName) !== 'undefined';
-            if (result && window.\(globalObjectName)) {
-                var methods = Object.keys(window.\(globalObjectName)).filter(function(k) {
-                    return typeof window.\(globalObjectName)[k] === 'function';
-                });
-                console.log('[WebViewBridge] Available methods on \(globalObjectName):', methods.join(', '));
-            } else {
-                console.log('[WebViewBridge] ERROR: window.\(globalObjectName) still not available!');
-                // List all window properties that might be relevant
-                var windowKeys = Object.keys(window).filter(function(k) {
-                    return k.toLowerCase().indexOf('shadow') !== -1 ||
-                           k.toLowerCase().indexOf('privacy') !== -1 ||
-                           k.toLowerCase().indexOf('cash') !== -1;
-                });
-                console.log('[WebViewBridge] Relevant window keys:', windowKeys.join(', '));
+                return { available: available ? 1 : 0, debug: debug.join(' | ') };
+            } catch (e) {
+                return { available: 0, error: e.message, debug: 'exception: ' + e.message };
             }
-            return { available: result };
         })();
         """
 
@@ -325,8 +742,15 @@ public final class WebViewBridge: NSObject {
             let verifyResult = try await webView.evaluateJavaScript(verifyScript)
             DebugLogger.log("[WebViewBridge] Verification result: \(String(describing: verifyResult))")
 
-            // Parse verification result
-            if let dict = verifyResult as? [String: Any], let available = dict["available"] as? Bool {
+            // Parse verification result and log debug info
+            if let dict = verifyResult as? [String: Any] {
+                if let debugInfo = dict["debug"] as? String {
+                    DebugLogger.log("[WebViewBridge] Debug: \(debugInfo)")
+                }
+                if let error = dict["error"] as? String {
+                    DebugLogger.log("[WebViewBridge] JS Error: \(error)")
+                }
+                let available = (dict["available"] as? Int) == 1
                 if !available {
                     DebugLogger.log("[WebViewBridge] WARNING: Global object \(globalObjectName) not available after verification")
                 }
@@ -455,8 +879,20 @@ extension WebViewBridge: WKScriptMessageHandler {
         didReceive message: WKScriptMessage
     ) {
         guard message.name == "nativeCallback",
-              let body = message.body as? [String: Any],
-              let callbackId = body["callbackId"] as? String else {
+              let body = message.body as? [String: Any] else {
+            return
+        }
+
+        // Handle console log messages
+        if let msgType = body["type"] as? String, msgType == "console" {
+            let level = body["level"] as? String ?? "log"
+            let msg = body["message"] as? String ?? ""
+            DebugLogger.log("[WebView/\(level)] \(msg)")
+            return
+        }
+
+        // Handle callback messages
+        guard let callbackId = body["callbackId"] as? String else {
             return
         }
 

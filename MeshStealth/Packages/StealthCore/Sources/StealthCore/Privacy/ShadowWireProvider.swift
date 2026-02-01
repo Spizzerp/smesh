@@ -267,21 +267,64 @@ public actor ShadowWireProvider: PrivacyProtocol {
             return
         }
 
-        // Convert to base58 for the JS SDK
-        let base58Key = secretKey.base58EncodedString
+        // Solana secret keys are 64 bytes (32-byte seed + 32-byte pubkey)
+        // Some SDKs want just the 32-byte seed, others want the full 64 bytes
+        // Try the 32-byte seed first (more common for JS SDKs)
+        let keyToUse: Data
+        if secretKey.count == 64 {
+            // Extract just the 32-byte seed portion
+            keyToUse = secretKey.prefix(32)
+            DebugLogger.log("[ShadowWire] Using 32-byte seed from 64-byte key")
+        } else {
+            keyToUse = secretKey
+        }
+
+        // Try different key formats - JS SDKs vary in what they expect
+        let byteArray = Array(keyToUse)  // [UInt8] array
+        let base58Key = keyToUse.base58EncodedString
 
         do {
-            let result = try await bridge.execute(method: "setWallet", params: [
+            // First try as byte array (most common for JS crypto SDKs)
+            var result = try await bridge.execute(method: "setWallet", params: [
+                "spendingKey": byteArray
+            ])
+
+            if result.success {
+                DebugLogger.log("[ShadowWire] Wallet set successfully (byte array)")
+                return
+            }
+
+            DebugLogger.log("[ShadowWire] byte array format failed, trying base58...")
+
+            // Try base58 format
+            result = try await bridge.execute(method: "setWallet", params: [
                 "spendingKey": base58Key
             ])
 
             if result.success {
-                DebugLogger.log("[ShadowWire] Wallet set successfully")
-            } else {
-                DebugLogger.log("[ShadowWire] Failed to set wallet: \(result.error ?? "unknown")")
+                DebugLogger.log("[ShadowWire] Wallet set successfully (base58)")
+                return
             }
+
+            // Try with full 64-byte key as byte array
+            if secretKey.count == 64 && keyToUse.count == 32 {
+                DebugLogger.log("[ShadowWire] Trying full 64-byte key as array...")
+                let fullByteArray = Array(secretKey)
+                result = try await bridge.execute(method: "setWallet", params: [
+                    "spendingKey": fullByteArray
+                ])
+
+                if result.success {
+                    DebugLogger.log("[ShadowWire] Wallet set successfully (full 64-byte array)")
+                    return
+                }
+            }
+
+            // Wallet setting failed but SDK is in simulation mode anyway
+            // Log warning but don't treat as critical error
+            DebugLogger.log("[ShadowWire] Wallet format not accepted (simulation mode - continuing anyway)")
         } catch {
-            DebugLogger.log("[ShadowWire] Error setting wallet: \(error)")
+            DebugLogger.log("[ShadowWire] Error setting wallet: \(error) (simulation mode - continuing anyway)")
         }
     }
 
