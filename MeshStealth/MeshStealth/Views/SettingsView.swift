@@ -119,8 +119,17 @@ struct SettingsView: View {
                             TerminalSettingsRow(
                                 label: "STATUS",
                                 value: privacyStatusValue,
-                                valueColor: walletViewModel.privacyEnabled ? TerminalPalette.success : TerminalPalette.textMuted
+                                valueColor: privacyStatusColor
                             )
+
+                            // Mode indicator (simulation vs live)
+                            if walletViewModel.privacyEnabled && walletViewModel.selectedPrivacyProtocol != .direct {
+                                TerminalSettingsRow(
+                                    label: "MODE",
+                                    value: walletViewModel.privacySimulationMode ? "[SIMULATION]" : "[LIVE]",
+                                    valueColor: walletViewModel.privacySimulationMode ? TerminalPalette.warning : TerminalPalette.success
+                                )
+                            }
 
                             // Pool balance (if any)
                             if walletViewModel.privacyPoolBalance > 0 {
@@ -312,6 +321,16 @@ struct SettingsView: View {
         }
     }
 
+    private var privacyStatusColor: Color {
+        if !walletViewModel.privacyEnabled {
+            return TerminalPalette.textMuted
+        }
+        if !walletViewModel.privacyReady && walletViewModel.selectedPrivacyProtocol != .direct {
+            return TerminalPalette.warning
+        }
+        return TerminalPalette.success
+    }
+
     private func cycleProtocol() {
         let protocols: [PrivacyProtocolId] = [.direct, .shadowWire, .privacyCash]
         if let currentIndex = protocols.firstIndex(of: walletViewModel.selectedPrivacyProtocol) {
@@ -395,7 +414,7 @@ struct PrivacyInfoSheet: View {
                         // ShadowWire
                         TerminalProtocolCard(
                             name: "SHADOWWIRE",
-                            description: "Radr Labs privacy pool using Bulletproof proofs. Hides transfer amounts and breaks sender-receiver link.",
+                            description: "Radr Labs privacy layer using ZK proofs. Hides transfer amounts and breaks sender-receiver link. Runs in SIMULATION mode without merchant key.",
                             prize: 15_000,
                             color: TerminalPalette.purple
                         )

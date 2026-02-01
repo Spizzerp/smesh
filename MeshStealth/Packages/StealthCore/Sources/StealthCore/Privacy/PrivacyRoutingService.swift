@@ -19,6 +19,9 @@ public class PrivacyRoutingService: ObservableObject {
     /// Whether the selected protocol is ready
     @Published public private(set) var isReady: Bool = false
 
+    /// Whether running in simulation mode (no real transactions)
+    @Published public private(set) var isSimulationMode: Bool = false
+
     /// Current pool balance (if any)
     @Published public private(set) var poolBalance: UInt64 = 0
 
@@ -90,7 +93,10 @@ public class PrivacyRoutingService: ObservableObject {
         // Cancel any existing initialization
         initializationTask?.cancel()
 
+        DebugLogger.log("[PrivacyRouting] Initializing privacy protocol: \(selectedProtocol.displayName)")
+
         guard selectedProtocol != .direct else {
+            DebugLogger.log("[PrivacyRouting] Direct mode - no initialization needed")
             isReady = true
             return
         }
@@ -102,9 +108,13 @@ public class PrivacyRoutingService: ObservableObject {
             do {
                 switch selectedProtocol {
                 case .shadowWire:
+                    DebugLogger.log("[PrivacyRouting] Starting ShadowWire provider initialization...")
                     try await shadowWireProvider?.initialize()
+                    DebugLogger.log("[PrivacyRouting] ShadowWire provider initialization complete")
                 case .privacyCash:
+                    DebugLogger.log("[PrivacyRouting] Starting PrivacyCash provider initialization...")
                     try await privacyCashProvider?.initialize()
+                    DebugLogger.log("[PrivacyRouting] PrivacyCash provider initialization complete")
                 case .direct:
                     break
                 }
@@ -112,9 +122,10 @@ public class PrivacyRoutingService: ObservableObject {
                 await updateReadiness()
                 await refreshPoolBalance()
 
-                print("[PrivacyRouting] \(selectedProtocol.displayName) initialized")
+                DebugLogger.log("[PrivacyRouting] \(selectedProtocol.displayName) initialized successfully, isReady=\(isReady)")
 
             } catch {
+                DebugLogger.log("[PrivacyRouting] \(selectedProtocol.displayName) initialization FAILED: \(error)")
                 lastError = error
                 isReady = false
                 throw error
@@ -158,11 +169,11 @@ public class PrivacyRoutingService: ObservableObject {
 
         // Check minimum amount
         guard amount >= configuration.minAmountForPrivacy else {
-            print("[PrivacyRouting] Amount \(amount) below minimum \(configuration.minAmountForPrivacy), skipping privacy routing")
+            DebugLogger.log("[PrivacyRouting] Amount \(amount) below minimum \(configuration.minAmountForPrivacy), skipping privacy routing")
             throw PrivacyProtocolError.invalidAmount
         }
 
-        print("[PrivacyRouting] Routing \(amount) lamports via \(selectedProtocol.displayName)")
+        DebugLogger.log("[PrivacyRouting] Routing \(amount) lamports via \(selectedProtocol.displayName)")
 
         do {
             let signature: String
@@ -204,7 +215,7 @@ public class PrivacyRoutingService: ObservableObject {
 
             // Fallback to direct transfer if configured
             if configuration.fallbackToDirect {
-                print("[PrivacyRouting] Privacy routing failed, will use direct transfer: \(error)")
+                DebugLogger.log("[PrivacyRouting] Privacy routing failed, will use direct transfer: \(error)")
                 throw error // Let caller handle fallback
             }
 
@@ -281,15 +292,22 @@ public class PrivacyRoutingService: ObservableObject {
 
     // MARK: - Status
 
-    /// Update readiness state
+    /// Update readiness state and simulation mode
     private func updateReadiness() async {
         switch selectedProtocol {
         case .direct:
             isReady = true
+            isSimulationMode = false
         case .shadowWire:
             isReady = await shadowWireProvider?.isAvailable ?? false
+            isSimulationMode = await shadowWireProvider?.isSimulationMode ?? true
         case .privacyCash:
             isReady = await privacyCashProvider?.isAvailable ?? false
+            isSimulationMode = await privacyCashProvider?.isSimulationMode ?? false
+        }
+
+        if isSimulationMode && selectedProtocol != .direct {
+            DebugLogger.log("[PrivacyRouting] Running in SIMULATION mode - transactions will be simulated")
         }
     }
 
@@ -310,7 +328,7 @@ public class PrivacyRoutingService: ObservableObject {
                 poolBalance = 0
             }
         } catch {
-            print("[PrivacyRouting] Failed to refresh pool balance: \(error)")
+            DebugLogger.log("[PrivacyRouting] Failed to refresh pool balance: \(error)")
         }
     }
 
@@ -339,15 +357,22 @@ public class PrivacyRoutingService: ObservableObject {
     /// Set the wallet for transaction signing
     /// - Parameter secretKey: The wallet's secret key (64 bytes ed25519)
     public func setWallet(_ secretKey: Data) async {
-        print("[PrivacyRouting] Setting wallet for \(selectedProtocol.displayName)")
+        DebugLogger.log("[PrivacyRouting] Setting wallet for \(selectedProtocol.displayName) (key length: \(secretKey.count) bytes)")
+
+        guard secretKey.count == 64 else {
+            DebugLogger.log("[PrivacyRouting] ERROR: Invalid secret key length \(secretKey.count), expected 64")
+            return
+        }
 
         switch selectedProtocol {
         case .privacyCash:
+            DebugLogger.log("[PrivacyRouting] Forwarding wallet to PrivacyCash provider")
             await privacyCashProvider?.setWallet(secretKey)
         case .shadowWire:
+            DebugLogger.log("[PrivacyRouting] Forwarding wallet to ShadowWire provider")
             await shadowWireProvider?.setWallet(secretKey)
         case .direct:
-            break
+            DebugLogger.log("[PrivacyRouting] Direct mode - no wallet passthrough needed")
         }
     }
 
@@ -363,12 +388,14 @@ public class PrivacyRoutingService: ObservableObject {
             return "\(selectedProtocol.displayName): Initializing..."
         }
 
+        let modeStr = isSimulationMode ? " (SIM)" : ""
+
         if poolBalance > 0 {
             let sol = Double(poolBalance) / 1_000_000_000
-            return "\(selectedProtocol.displayName): \(String(format: "%.4f", sol)) SOL"
+            return "\(selectedProtocol.displayName)\(modeStr): \(String(format: "%.4f", sol)) SOL"
         }
 
-        return "\(selectedProtocol.displayName): Ready"
+        return "\(selectedProtocol.displayName)\(modeStr): Ready"
     }
 
     /// Prize value of the selected protocol

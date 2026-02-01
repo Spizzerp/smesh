@@ -25,6 +25,11 @@ public actor ShadowWireProvider: PrivacyProtocol {
         get async { isInitialized && webViewBridge != nil }
     }
 
+    /// Whether running in simulation mode (no merchant key = simulated transactions)
+    public var isSimulationMode: Bool {
+        get async { config.merchantKey == nil }
+    }
+
     // MARK: - Private Properties
 
     private var webViewBridge: WebViewBridge?
@@ -49,21 +54,28 @@ public actor ShadowWireProvider: PrivacyProtocol {
         /// Network (devnet/mainnet)
         public let network: String
 
+        /// Merchant API key from Radr Labs (required for real transactions)
+        /// Get one at: https://radrlabs.io or check if devnet allows keyless access
+        public let merchantKey: String?
+
         public init(
             rpcEndpoint: String = "https://api.devnet.solana.com",
             debug: Bool = true,
-            network: String = "devnet"
+            network: String = "devnet",
+            merchantKey: String? = nil
         ) {
             self.rpcEndpoint = rpcEndpoint
             self.debug = debug
             self.network = network
+            self.merchantKey = merchantKey
         }
 
         public static let devnet = Configuration()
         public static let mainnet = Configuration(
             rpcEndpoint: "https://api.mainnet-beta.solana.com",
             debug: false,
-            network: "mainnet"
+            network: "mainnet",
+            merchantKey: nil  // Must be set for mainnet
         )
     }
 
@@ -80,7 +92,7 @@ public actor ShadowWireProvider: PrivacyProtocol {
     public func initialize() async throws {
         guard !isInitialized else { return }
 
-        print("[ShadowWire] Initializing provider...")
+        DebugLogger.log("[ShadowWire] Initializing provider...")
 
         // Load the bundled SDK JavaScript
         let sdkBundle = try loadSDKBundle()
@@ -95,11 +107,21 @@ public actor ShadowWireProvider: PrivacyProtocol {
         try await bridge.initialize()
 
         // Initialize the SDK with our configuration
-        let initResult = try await bridge.execute(method: "init", params: [
+        var initParams: [String: Any] = [
             "rpcEndpoint": config.rpcEndpoint,
             "debug": config.debug,
             "network": config.network
-        ])
+        ]
+
+        // Add merchantKey if provided (required for real transactions on ShadowWire)
+        if let merchantKey = config.merchantKey {
+            initParams["merchantKey"] = merchantKey
+            DebugLogger.log("[ShadowWire] Using merchant key for initialization")
+        } else {
+            DebugLogger.log("[ShadowWire] WARNING: No merchantKey provided - may fail for real transactions")
+        }
+
+        let initResult = try await bridge.execute(method: "init", params: initParams)
 
         guard initResult.success else {
             throw PrivacyProtocolError.sdkLoadFailed(initResult.error ?? "Unknown initialization error")
@@ -108,7 +130,7 @@ public actor ShadowWireProvider: PrivacyProtocol {
         self.webViewBridge = bridge
         self.isInitialized = true
 
-        print("[ShadowWire] Provider initialized successfully")
+        DebugLogger.log("[ShadowWire] Provider initialized successfully")
     }
 
     public func deposit(amount: UInt64, token: String?) async throws -> PrivacyDepositResult {
@@ -116,7 +138,7 @@ public actor ShadowWireProvider: PrivacyProtocol {
             throw PrivacyProtocolError.notInitialized
         }
 
-        print("[ShadowWire] Depositing \(amount) lamports into privacy pool")
+        DebugLogger.log("[ShadowWire] Depositing \(amount) lamports into privacy pool")
 
         let result = try await bridge.execute(method: "deposit", params: [
             "amount": amount,
@@ -157,7 +179,7 @@ public actor ShadowWireProvider: PrivacyProtocol {
             throw PrivacyProtocolError.insufficientPoolBalance(available: cachedPoolBalance, required: amount)
         }
 
-        print("[ShadowWire] Withdrawing \(amount) lamports to \(destination)")
+        DebugLogger.log("[ShadowWire] Withdrawing \(amount) lamports to \(destination)")
 
         let result = try await bridge.execute(method: "withdraw", params: [
             "amount": amount,
@@ -188,7 +210,7 @@ public actor ShadowWireProvider: PrivacyProtocol {
             throw PrivacyProtocolError.notInitialized
         }
 
-        print("[ShadowWire] Internal transfer of \(amount) lamports")
+        DebugLogger.log("[ShadowWire] Internal transfer of \(amount) lamports")
 
         let result = try await bridge.execute(method: "transfer", params: [
             "amount": amount,
@@ -234,14 +256,14 @@ public actor ShadowWireProvider: PrivacyProtocol {
         isInitialized = false
         commitments.removeAll()
         cachedPoolBalance = 0
-        print("[ShadowWire] Provider shut down")
+        DebugLogger.log("[ShadowWire] Provider shut down")
     }
 
     /// Set the wallet for transaction signing
     /// - Parameter secretKey: The wallet's secret key (64 bytes ed25519)
     public func setWallet(_ secretKey: Data) async {
         guard let bridge = webViewBridge else {
-            print("[ShadowWire] Cannot set wallet - not initialized")
+            DebugLogger.log("[ShadowWire] Cannot set wallet - not initialized")
             return
         }
 
@@ -254,12 +276,12 @@ public actor ShadowWireProvider: PrivacyProtocol {
             ])
 
             if result.success {
-                print("[ShadowWire] Wallet set successfully")
+                DebugLogger.log("[ShadowWire] Wallet set successfully")
             } else {
-                print("[ShadowWire] Failed to set wallet: \(result.error ?? "unknown")")
+                DebugLogger.log("[ShadowWire] Failed to set wallet: \(result.error ?? "unknown")")
             }
         } catch {
-            print("[ShadowWire] Error setting wallet: \(error)")
+            DebugLogger.log("[ShadowWire] Error setting wallet: \(error)")
         }
     }
 
@@ -279,10 +301,10 @@ public actor ShadowWireProvider: PrivacyProtocol {
         spendingKey: Data
     ) async throws -> String {
 
-        print("[ShadowWire] Routing settlement through privacy pool")
-        print("[ShadowWire]   From: \(sourceAddress)")
-        print("[ShadowWire]   To: \(destinationAddress)")
-        print("[ShadowWire]   Amount: \(amount) lamports")
+        DebugLogger.log("[ShadowWire] Routing settlement through privacy pool")
+        DebugLogger.log("[ShadowWire]   From: \(sourceAddress)")
+        DebugLogger.log("[ShadowWire]   To: \(destinationAddress)")
+        DebugLogger.log("[ShadowWire]   Amount: \(amount) lamports")
 
         // Step 1: Deposit from source stealth address into pool
         let depositResult = try await depositFromStealth(
@@ -290,7 +312,7 @@ public actor ShadowWireProvider: PrivacyProtocol {
             amount: amount,
             spendingKey: spendingKey
         )
-        print("[ShadowWire]   Deposit tx: \(depositResult.signature)")
+        DebugLogger.log("[ShadowWire]   Deposit tx: \(depositResult.signature)")
 
         // Step 2: Wait for deposit confirmation
         try await Task.sleep(nanoseconds: 2_000_000_000) // 2s
@@ -301,7 +323,7 @@ public actor ShadowWireProvider: PrivacyProtocol {
             token: nil,
             destination: destinationAddress
         )
-        print("[ShadowWire]   Withdraw tx: \(withdrawResult.signature)")
+        DebugLogger.log("[ShadowWire]   Withdraw tx: \(withdrawResult.signature)")
 
         return withdrawResult.signature
     }
@@ -348,110 +370,34 @@ public actor ShadowWireProvider: PrivacyProtocol {
     // MARK: - SDK Bundle Loading
 
     private func loadSDKBundle() throws -> String {
-        // Try to load from bundle resources
-        if let bundleURL = Bundle.module.url(forResource: "shadowwire-bundle", withExtension: "js"),
-           let bundleContent = try? String(contentsOf: bundleURL, encoding: .utf8) {
-            return bundleContent
+        DebugLogger.log("[ShadowWire] Loading SDK bundle from Bundle.module...")
+
+        guard let bundleURL = Bundle.module.url(forResource: "shadowwire-bundle", withExtension: "js") else {
+            // Debug: List what resources are available
+            #if DEBUG
+            if let resourcePath = Bundle.module.resourcePath {
+                DebugLogger.log("[ShadowWire] Resource path: \(resourcePath)")
+                if let contents = try? FileManager.default.contentsOfDirectory(atPath: resourcePath) {
+                    DebugLogger.log("[ShadowWire] Available resources: \(contents.joined(separator: ", "))")
+                }
+            }
+            #endif
+
+            throw PrivacyProtocolError.sdkLoadFailed("shadowwire-bundle.js not found in Bundle.module")
         }
 
-        // Fallback: Use placeholder SDK for development
-        return Self.placeholderSDK
+        DebugLogger.log("[ShadowWire] Found bundle at: \(bundleURL.path)")
+
+        let bundleContent = try String(contentsOf: bundleURL, encoding: .utf8)
+        let bundleSize = bundleContent.count
+        DebugLogger.log("[ShadowWire] Loaded SDK bundle (\(bundleSize) chars)")
+
+        // Validate bundle looks correct
+        guard bundleSize > 100_000 && bundleContent.contains("ShadowWireBundle") else {
+            throw PrivacyProtocolError.sdkLoadFailed("Bundle appears invalid (size=\(bundleSize), missing ShadowWireBundle marker)")
+        }
+
+        DebugLogger.log("[ShadowWire] Bundle validation passed")
+        return bundleContent
     }
-
-    /// Placeholder SDK for development/testing
-    /// In production, this would be replaced with the actual @radr/shadowwire bundle
-    private static let placeholderSDK = """
-    (function() {
-        console.log('[ShadowWire] Loading placeholder SDK...');
-
-        window.shadowWire = {
-            _initialized: false,
-            _config: null,
-            _balance: 0,
-            _commitments: [],
-
-            init: async function(config) {
-                console.log('[ShadowWire] Initializing with config:', JSON.stringify(config));
-                this._config = config;
-                this._initialized = true;
-                return { success: true };
-            },
-
-            deposit: async function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                console.log('[ShadowWire] Deposit:', JSON.stringify(params));
-
-                // Simulate deposit
-                const amount = params.amount || 0;
-                this._balance += amount;
-
-                // Generate mock commitment
-                const commitment = '0x' + Array(64).fill(0).map(() =>
-                    Math.floor(Math.random() * 16).toString(16)
-                ).join('');
-                this._commitments.push(commitment);
-
-                // Simulate transaction
-                const signature = Array(88).fill(0).map(() =>
-                    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'[
-                        Math.floor(Math.random() * 62)
-                    ]
-                ).join('');
-
-                return {
-                    signature: signature,
-                    commitment: commitment
-                };
-            },
-
-            depositFrom: async function(params) {
-                // Deposit from a specific stealth address
-                return await this.deposit(params);
-            },
-
-            withdraw: async function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                console.log('[ShadowWire] Withdraw:', JSON.stringify(params));
-
-                const amount = params.amount || 0;
-                if (this._balance < amount) {
-                    throw new Error('Insufficient pool balance');
-                }
-                this._balance -= amount;
-
-                // Simulate transaction
-                const signature = Array(88).fill(0).map(() =>
-                    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'[
-                        Math.floor(Math.random() * 62)
-                    ]
-                ).join('');
-
-                return {
-                    signature: signature
-                };
-            },
-
-            transfer: async function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                console.log('[ShadowWire] Transfer:', JSON.stringify(params));
-
-                // Internal transfers don't affect balance
-                const proofId = 'proof_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-
-                return {
-                    proofId: proofId
-                };
-            },
-
-            getBalance: async function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                return {
-                    balance: this._balance
-                };
-            }
-        };
-
-        console.log('[ShadowWire] Placeholder SDK loaded');
-    })();
-    """
 }

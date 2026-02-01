@@ -48,6 +48,7 @@ class WalletViewModel: ObservableObject {
     @Published var privacyEnabled = false
     @Published var selectedPrivacyProtocol: PrivacyProtocolId = .direct
     @Published var privacyReady = false
+    @Published var privacySimulationMode = false
     @Published var privacyPoolBalance: Double = 0
     @Published var privacyError: String?
 
@@ -140,9 +141,36 @@ class WalletViewModel: ObservableObject {
         privacyRoutingService.$isReady
             .assign(to: &$privacyReady)
 
+        privacyRoutingService.$isSimulationMode
+            .assign(to: &$privacySimulationMode)
+
         privacyRoutingService.$poolBalance
             .map { Double($0) / 1_000_000_000 }
             .assign(to: &$privacyPoolBalance)
+    }
+
+    /// Bind to settlement service for progress updates
+    /// Called after initialization with the settlement service from MeshNetworkManager
+    func setupSettlementBindings(_ settlementService: SettlementService) {
+        settlementService.$isSettling
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isSettling)
+
+        settlementService.$lastResult
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$lastSettlementResult)
+
+        // Map pendingCount to progress if needed
+        settlementService.$pendingCount
+            .receive(on: DispatchQueue.main)
+            .map { count in
+                count > 0 ? SettlementProgress(
+                    total: count,
+                    completed: 0,
+                    status: "Settling \(count) payment(s)..."
+                ) : nil
+            }
+            .assign(to: &$settlementProgress)
     }
 
     // MARK: - Actions
@@ -332,7 +360,7 @@ class WalletViewModel: ObservableObject {
                 if let secretKey = await walletManager.mainWalletSecretKey {
                     await privacyRoutingService.setWallet(secretKey)
                 } else {
-                    print("[WalletVM] Warning: No wallet key available for privacy protocol")
+                    DebugLogger.log("[WalletVM] Warning: No wallet key available for privacy protocol")
                 }
             }
         } catch {

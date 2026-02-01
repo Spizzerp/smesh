@@ -129,11 +129,11 @@ public final class WebViewBridge: NSObject {
         webView.loadHTMLString(html, baseURL: nil)
 
         // Wait for page to actually load using continuation
-        print("[WebViewBridge] Waiting for page load...")
+        DebugLogger.log("[WebViewBridge] Waiting for page load...")
         await withCheckedContinuation { continuation in
             self.pageLoadContinuation = continuation
         }
-        print("[WebViewBridge] Page load confirmed, waiting for DOM ready...")
+        DebugLogger.log("[WebViewBridge] Page load confirmed, waiting for DOM ready...")
 
         // Additional wait for DOM to be fully ready
         try await Task.sleep(nanoseconds: 500_000_000) // 0.5s
@@ -142,7 +142,7 @@ public final class WebViewBridge: NSObject {
         try await injectSDK()
 
         isInitialized = true
-        print("[WebViewBridge] Initialized with \(globalObjectName)")
+        DebugLogger.log("[WebViewBridge] Initialized with \(globalObjectName)")
     }
 
     /// Inject the SDK JavaScript using script element injection
@@ -155,19 +155,19 @@ public final class WebViewBridge: NSObject {
         // For large bundles, use script element injection instead of evaluateJavaScript
         // This avoids hitting size limits on the evaluateJavaScript method
         let bundleSize = bundledJS.count
-        print("[WebViewBridge] Injecting SDK bundle (\(bundleSize) chars)")
+        DebugLogger.log("[WebViewBridge] Injecting SDK bundle (\(bundleSize) chars)")
 
         if bundleSize > 500_000 {
             // Large bundle - use chunked injection via script element
-            print("[WebViewBridge] Using chunked injection for large bundle")
+            DebugLogger.log("[WebViewBridge] Using chunked injection for large bundle")
             try await injectLargeBundle()
         } else {
             // Small bundle - direct evaluation is fine
             do {
                 let result = try await webView.evaluateJavaScript(bundledJS)
-                print("[WebViewBridge] SDK injected, result: \(String(describing: result))")
+                DebugLogger.log("[WebViewBridge] SDK injected, result: \(String(describing: result))")
             } catch {
-                print("[WebViewBridge] Direct injection failed: \(error)")
+                DebugLogger.log("[WebViewBridge] Direct injection failed: \(error)")
                 // Fallback to chunked injection
                 try await injectLargeBundle()
             }
@@ -197,7 +197,7 @@ public final class WebViewBridge: NSObject {
             index = endIndex
         }
 
-        print("[WebViewBridge] Injecting bundle in \(chunks.count) chunk(s)")
+        DebugLogger.log("[WebViewBridge] Injecting bundle in \(chunks.count) chunk(s)")
 
         // First, set up the accumulator
         _ = try? await webView.evaluateJavaScript("window._sdkChunks = [];")
@@ -206,7 +206,7 @@ public final class WebViewBridge: NSObject {
         for (i, chunk) in chunks.enumerated() {
             let addChunk = "window._sdkChunks.push('\(chunk)');"
             _ = try? await webView.evaluateJavaScript(addChunk)
-            print("[WebViewBridge] Sent chunk \(i + 1)/\(chunks.count)")
+            DebugLogger.log("[WebViewBridge] Sent chunk \(i + 1)/\(chunks.count)")
         }
 
         // Decode and execute
@@ -232,51 +232,90 @@ public final class WebViewBridge: NSObject {
 
         do {
             let result = try await webView.evaluateJavaScript(executeScript)
-            print("[WebViewBridge] Large bundle execution result: \(String(describing: result))")
+            DebugLogger.log("[WebViewBridge] Large bundle execution result: \(String(describing: result))")
         } catch {
-            print("[WebViewBridge] Large bundle execution failed: \(error)")
+            DebugLogger.log("[WebViewBridge] Large bundle execution failed: \(error)")
             throw PrivacyProtocolError.sdkLoadFailed("Failed to inject large bundle: \(error.localizedDescription)")
         }
 
-        // Give it time to execute
-        try await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+        // Give it time to execute - bundle footer code needs time to run
+        try await Task.sleep(nanoseconds: 1_000_000_000) // 1s (increased from 0.5s)
 
         // Verify and ensure the global object is set
         let verifyScript = """
         (function() {
             console.log('[WebViewBridge] Post-injection verification for \(globalObjectName)');
             console.log('[WebViewBridge] typeof window.\(globalObjectName):', typeof window.\(globalObjectName));
-            console.log('[WebViewBridge] typeof ShadowWireBundle:', typeof ShadowWireBundle);
+
+            // Check both bundle types
+            var hasShadowWireBundle = typeof ShadowWireBundle !== 'undefined';
+            var hasPrivacyCashBundle = typeof PrivacyCashBundle !== 'undefined';
+            console.log('[WebViewBridge] typeof ShadowWireBundle:', hasShadowWireBundle ? 'object' : 'undefined');
+            console.log('[WebViewBridge] typeof PrivacyCashBundle:', hasPrivacyCashBundle ? 'object' : 'undefined');
 
             // If window.shadowWire isn't set but ShadowWireBundle exists, set it now
-            if (typeof window.\(globalObjectName) === 'undefined' && typeof ShadowWireBundle !== 'undefined') {
-                console.log('[WebViewBridge] Attempting to extract from ShadowWireBundle...');
-                var keys = Object.keys(ShadowWireBundle);
-                console.log('[WebViewBridge] ShadowWireBundle keys:', keys);
+            if (typeof window.\(globalObjectName) === 'undefined') {
+                console.log('[WebViewBridge] window.\(globalObjectName) not set, attempting extraction...');
 
-                var target = ShadowWireBundle.\(globalObjectName) ||
-                             ShadowWireBundle.default ||
-                             ShadowWireBundle;
+                // Try ShadowWireBundle
+                if (hasShadowWireBundle) {
+                    console.log('[WebViewBridge] Attempting to extract from ShadowWireBundle...');
+                    var keys = Object.keys(ShadowWireBundle).slice(0, 10);
+                    console.log('[WebViewBridge] ShadowWireBundle keys (first 10):', keys.join(', '));
 
-                if (target && typeof target.init === 'function') {
-                    window.\(globalObjectName) = target;
-                    console.log('[WebViewBridge] Set window.\(globalObjectName) from ShadowWireBundle');
-                } else {
-                    console.log('[WebViewBridge] WARNING: Could not find valid object with init method');
-                    // Look deeper
-                    for (var key of keys) {
-                        if (ShadowWireBundle[key] && typeof ShadowWireBundle[key].init === 'function') {
-                            window.\(globalObjectName) = ShadowWireBundle[key];
-                            console.log('[WebViewBridge] Set window.\(globalObjectName) from ShadowWireBundle.' + key);
-                            break;
+                    var target = ShadowWireBundle.shadowWire ||
+                                 ShadowWireBundle.default ||
+                                 ShadowWireBundle;
+
+                    if (target && typeof target.init === 'function') {
+                        window.\(globalObjectName) = target;
+                        console.log('[WebViewBridge] Set window.\(globalObjectName) from ShadowWireBundle');
+                    } else {
+                        console.log('[WebViewBridge] Direct extraction failed, searching nested...');
+                        // Look deeper for init method
+                        for (var key of Object.keys(ShadowWireBundle)) {
+                            var candidate = ShadowWireBundle[key];
+                            if (candidate && typeof candidate === 'object' && typeof candidate.init === 'function') {
+                                window.\(globalObjectName) = candidate;
+                                console.log('[WebViewBridge] Set window.\(globalObjectName) from ShadowWireBundle.' + key);
+                                break;
+                            }
                         }
+                    }
+                }
+
+                // Try PrivacyCashBundle
+                if (hasPrivacyCashBundle && typeof window.\(globalObjectName) === 'undefined') {
+                    console.log('[WebViewBridge] Attempting to extract from PrivacyCashBundle...');
+                    var keys = Object.keys(PrivacyCashBundle).slice(0, 10);
+                    console.log('[WebViewBridge] PrivacyCashBundle keys (first 10):', keys.join(', '));
+
+                    var target = PrivacyCashBundle.privacyCash ||
+                                 PrivacyCashBundle.default ||
+                                 PrivacyCashBundle;
+
+                    if (target && typeof target.init === 'function') {
+                        window.\(globalObjectName) = target;
+                        console.log('[WebViewBridge] Set window.\(globalObjectName) from PrivacyCashBundle');
                     }
                 }
             }
 
             var result = typeof window.\(globalObjectName) !== 'undefined';
             if (result && window.\(globalObjectName)) {
-                console.log('[WebViewBridge] Available methods:', Object.keys(window.\(globalObjectName)).join(', '));
+                var methods = Object.keys(window.\(globalObjectName)).filter(function(k) {
+                    return typeof window.\(globalObjectName)[k] === 'function';
+                });
+                console.log('[WebViewBridge] Available methods on \(globalObjectName):', methods.join(', '));
+            } else {
+                console.log('[WebViewBridge] ERROR: window.\(globalObjectName) still not available!');
+                // List all window properties that might be relevant
+                var windowKeys = Object.keys(window).filter(function(k) {
+                    return k.toLowerCase().indexOf('shadow') !== -1 ||
+                           k.toLowerCase().indexOf('privacy') !== -1 ||
+                           k.toLowerCase().indexOf('cash') !== -1;
+                });
+                console.log('[WebViewBridge] Relevant window keys:', windowKeys.join(', '));
             }
             return { available: result };
         })();
@@ -284,9 +323,16 @@ public final class WebViewBridge: NSObject {
 
         do {
             let verifyResult = try await webView.evaluateJavaScript(verifyScript)
-            print("[WebViewBridge] Verification result: \(String(describing: verifyResult))")
+            DebugLogger.log("[WebViewBridge] Verification result: \(String(describing: verifyResult))")
+
+            // Parse verification result
+            if let dict = verifyResult as? [String: Any], let available = dict["available"] as? Bool {
+                if !available {
+                    DebugLogger.log("[WebViewBridge] WARNING: Global object \(globalObjectName) not available after verification")
+                }
+            }
         } catch {
-            print("[WebViewBridge] Verification failed: \(error)")
+            DebugLogger.log("[WebViewBridge] Verification failed: \(error)")
         }
     }
 
@@ -436,7 +482,7 @@ extension WebViewBridge: WKScriptMessageHandler {
 
 extension WebViewBridge: WKNavigationDelegate {
     public nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        print("[WebViewBridge] Page loaded")
+        DebugLogger.log("[WebViewBridge] Page loaded")
         Task { @MainActor in
             // Resume the page load continuation if waiting
             if let continuation = self.pageLoadContinuation {
@@ -447,7 +493,7 @@ extension WebViewBridge: WKNavigationDelegate {
     }
 
     public nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        print("[WebViewBridge] Navigation failed: \(error)")
+        DebugLogger.log("[WebViewBridge] Navigation failed: \(error)")
         Task { @MainActor in
             // Resume with error state (page still usable for some operations)
             if let continuation = self.pageLoadContinuation {
@@ -498,12 +544,12 @@ public actor JSContextBridge {
 
         // Set up error handling
         context.exceptionHandler = { _, exception in
-            print("[JSContextBridge] JS Exception: \(exception?.toString() ?? "unknown")")
+            DebugLogger.log("[JSContextBridge] JS Exception: \(exception?.toString() ?? "unknown")")
         }
 
         // Add console.log support
         let consoleLog: @convention(block) (String) -> Void = { message in
-            print("[JSContextBridge] console.log: \(message)")
+            DebugLogger.log("[JSContextBridge] console.log: \(message)")
         }
         context.setObject(consoleLog, forKeyedSubscript: "consoleLog" as NSString)
         context.evaluateScript("var console = { log: consoleLog, error: consoleLog, warn: consoleLog, info: consoleLog };")
@@ -511,18 +557,83 @@ public actor JSContextBridge {
         // Add Web API polyfills that don't exist in JavaScriptCore
         context.evaluateScript(Self.webAPIPolyfills)
 
+        DebugLogger.log("[JSContextBridge] Injecting SDK bundle (\(bundledJS.count) chars)...")
+
         // Inject the SDK bundle
         context.evaluateScript(bundledJS)
 
-        // Verify the global object exists
-        guard let globalObj = context.objectForKeyedSubscript(globalObjectName),
-              !globalObj.isUndefined else {
+        // Check for JS exceptions after bundle execution
+        if let exception = context.exception {
+            let errorMsg = exception.toString() ?? "Unknown error"
+            DebugLogger.log("[JSContextBridge] Bundle execution error: \(errorMsg)")
+            context.exception = nil
+        }
+
+        // Try to find the global object - check multiple locations
+        var globalObj = context.objectForKeyedSubscript(globalObjectName)
+
+        // If not found directly, try to extract from bundle namespace
+        if globalObj == nil || globalObj!.isUndefined {
+            DebugLogger.log("[JSContextBridge] \(globalObjectName) not found directly, trying extraction...")
+
+            // For PrivacyCash bundle
+            let extractScript = """
+            (function() {
+                console.log('[JSContextBridge] Attempting global extraction...');
+
+                // Check if the bundle module is available
+                if (typeof PrivacyCashBundle !== 'undefined') {
+                    console.log('[JSContextBridge] Found PrivacyCashBundle');
+                    var target = PrivacyCashBundle.privacyCash || PrivacyCashBundle.default || PrivacyCashBundle;
+                    if (target && typeof target.init === 'function') {
+                        this.privacyCash = target;
+                        console.log('[JSContextBridge] Extracted privacyCash from PrivacyCashBundle');
+                        return true;
+                    }
+                }
+
+                // Check globalThis
+                if (typeof globalThis !== 'undefined' && globalThis.\(globalObjectName)) {
+                    this.\(globalObjectName) = globalThis.\(globalObjectName);
+                    console.log('[JSContextBridge] Copied from globalThis');
+                    return true;
+                }
+
+                return false;
+            })();
+            """
+
+            context.evaluateScript(extractScript)
+            globalObj = context.objectForKeyedSubscript(globalObjectName)
+        }
+
+        // Final verification
+        guard let obj = globalObj, !obj.isUndefined else {
+            DebugLogger.log("[JSContextBridge] ERROR: Global object '\(globalObjectName)' not found after loading SDK")
+
+            // Debug: List available globals
+            #if DEBUG
+            let listGlobals = "Object.keys(this).filter(function(k) { return typeof this[k] === 'object' || typeof this[k] === 'function'; }).join(', ')"
+            if let globals = context.evaluateScript(listGlobals)?.toString() {
+                DebugLogger.log("[JSContextBridge] Available globals: \(globals)")
+            }
+            #endif
+
             throw PrivacyProtocolError.sdkLoadFailed("Global object '\(globalObjectName)' not found after loading SDK")
         }
 
+        // Log available methods
+        #if DEBUG
+        if let methods = obj.objectForKeyedSubscript("init"), !methods.isUndefined {
+            DebugLogger.log("[JSContextBridge] \(globalObjectName).init is available")
+        } else {
+            DebugLogger.log("[JSContextBridge] WARNING: \(globalObjectName).init not found!")
+        }
+        #endif
+
         self.context = context
         isInitialized = true
-        print("[JSContextBridge] Initialized with \(globalObjectName)")
+        DebugLogger.log("[JSContextBridge] Initialized successfully with \(globalObjectName)")
     }
 
     /// Shutdown and cleanup

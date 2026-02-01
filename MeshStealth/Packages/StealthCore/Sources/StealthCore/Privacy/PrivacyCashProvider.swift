@@ -29,6 +29,11 @@ public actor PrivacyCashProvider: PrivacyProtocol {
         get async { isInitialized && jsBridge != nil }
     }
 
+    /// Privacy Cash doesn't require API keys - always runs in live mode
+    public var isSimulationMode: Bool {
+        get async { false }
+    }
+
     // MARK: - Private Properties
 
     private var jsBridge: JSContextBridge?
@@ -75,7 +80,7 @@ public actor PrivacyCashProvider: PrivacyProtocol {
     public func initialize() async throws {
         guard !isInitialized else { return }
 
-        print("[PrivacyCash] Initializing provider...")
+        DebugLogger.log("[PrivacyCash] Initializing provider...")
 
         // Load the bundled SDK JavaScript
         let sdkBundle = try loadSDKBundle()
@@ -101,7 +106,7 @@ public actor PrivacyCashProvider: PrivacyProtocol {
         self.jsBridge = bridge
         self.isInitialized = true
 
-        print("[PrivacyCash] Provider initialized successfully")
+        DebugLogger.log("[PrivacyCash] Provider initialized successfully")
     }
 
     public func deposit(amount: UInt64, token: String?) async throws -> PrivacyDepositResult {
@@ -109,7 +114,7 @@ public actor PrivacyCashProvider: PrivacyProtocol {
             throw PrivacyProtocolError.notInitialized
         }
 
-        print("[PrivacyCash] Depositing \(amount) lamports\(token.map { " (\($0))" } ?? "")")
+        DebugLogger.log("[PrivacyCash] Depositing \(amount) lamports\(token.map { " (\($0))" } ?? "")")
 
         let method = token == nil ? "deposit" : "depositSPL"
         var params: [String: Any] = ["amount": amount]
@@ -154,7 +159,7 @@ public actor PrivacyCashProvider: PrivacyProtocol {
             throw PrivacyProtocolError.insufficientPoolBalance(available: availableBalance, required: amount)
         }
 
-        print("[PrivacyCash] Withdrawing \(amount) lamports to \(destination)")
+        DebugLogger.log("[PrivacyCash] Withdrawing \(amount) lamports to \(destination)")
 
         let method = token == nil ? "withdraw" : "withdrawSPL"
         var params: [String: Any] = [
@@ -192,7 +197,7 @@ public actor PrivacyCashProvider: PrivacyProtocol {
             throw PrivacyProtocolError.notInitialized
         }
 
-        print("[PrivacyCash] Internal transfer of \(amount) lamports to \(recipient)")
+        DebugLogger.log("[PrivacyCash] Internal transfer of \(amount) lamports to \(recipient)")
 
         let result = try await bridge.execute(method: "transfer", params: [
             "amount": amount,
@@ -248,14 +253,14 @@ public actor PrivacyCashProvider: PrivacyProtocol {
         isInitialized = false
         cachedPoolBalance = 0
         cachedTokenBalances.removeAll()
-        print("[PrivacyCash] Provider shut down")
+        DebugLogger.log("[PrivacyCash] Provider shut down")
     }
 
     /// Set the wallet for transaction signing
     /// - Parameter secretKey: The wallet's secret key (64 bytes ed25519)
     public func setWallet(_ secretKey: Data) async {
         guard let bridge = jsBridge else {
-            print("[PrivacyCash] Cannot set wallet - not initialized")
+            DebugLogger.log("[PrivacyCash] Cannot set wallet - not initialized")
             return
         }
 
@@ -268,12 +273,12 @@ public actor PrivacyCashProvider: PrivacyProtocol {
             ])
 
             if result.success {
-                print("[PrivacyCash] Wallet set successfully")
+                DebugLogger.log("[PrivacyCash] Wallet set successfully")
             } else {
-                print("[PrivacyCash] Failed to set wallet: \(result.error ?? "unknown")")
+                DebugLogger.log("[PrivacyCash] Failed to set wallet: \(result.error ?? "unknown")")
             }
         } catch {
-            print("[PrivacyCash] Error setting wallet: \(error)")
+            DebugLogger.log("[PrivacyCash] Error setting wallet: \(error)")
         }
     }
 
@@ -293,10 +298,10 @@ public actor PrivacyCashProvider: PrivacyProtocol {
         spendingKey: Data
     ) async throws -> String {
 
-        print("[PrivacyCash] Routing settlement through privacy pool")
-        print("[PrivacyCash]   From: \(sourceAddress)")
-        print("[PrivacyCash]   To: \(destinationAddress)")
-        print("[PrivacyCash]   Amount: \(amount) lamports")
+        DebugLogger.log("[PrivacyCash] Routing settlement through privacy pool")
+        DebugLogger.log("[PrivacyCash]   From: \(sourceAddress)")
+        DebugLogger.log("[PrivacyCash]   To: \(destinationAddress)")
+        DebugLogger.log("[PrivacyCash]   Amount: \(amount) lamports")
 
         // Step 1: Deposit from source into pool
         let depositResult = try await depositFromStealth(
@@ -304,7 +309,7 @@ public actor PrivacyCashProvider: PrivacyProtocol {
             amount: amount,
             spendingKey: spendingKey
         )
-        print("[PrivacyCash]   Deposit tx: \(depositResult.signature)")
+        DebugLogger.log("[PrivacyCash]   Deposit tx: \(depositResult.signature)")
 
         // Step 2: Wait for confirmation
         try await Task.sleep(nanoseconds: 2_000_000_000) // 2s
@@ -315,7 +320,7 @@ public actor PrivacyCashProvider: PrivacyProtocol {
             token: nil,
             destination: destinationAddress
         )
-        print("[PrivacyCash]   Withdraw tx: \(withdrawResult.signature)")
+        DebugLogger.log("[PrivacyCash]   Withdraw tx: \(withdrawResult.signature)")
 
         return withdrawResult.signature
     }
@@ -357,121 +362,34 @@ public actor PrivacyCashProvider: PrivacyProtocol {
     // MARK: - SDK Bundle Loading
 
     private func loadSDKBundle() throws -> String {
-        // Try to load from bundle resources
-        if let bundleURL = Bundle.module.url(forResource: "privacycash-bundle", withExtension: "js"),
-           let bundleContent = try? String(contentsOf: bundleURL, encoding: .utf8) {
-            return bundleContent
+        DebugLogger.log("[PrivacyCash] Loading SDK bundle from Bundle.module...")
+
+        guard let bundleURL = Bundle.module.url(forResource: "privacycash-bundle", withExtension: "js") else {
+            // Debug: List what resources are available
+            #if DEBUG
+            if let resourcePath = Bundle.module.resourcePath {
+                DebugLogger.log("[PrivacyCash] Resource path: \(resourcePath)")
+                if let contents = try? FileManager.default.contentsOfDirectory(atPath: resourcePath) {
+                    DebugLogger.log("[PrivacyCash] Available resources: \(contents.joined(separator: ", "))")
+                }
+            }
+            #endif
+
+            throw PrivacyProtocolError.sdkLoadFailed("privacycash-bundle.js not found in Bundle.module")
         }
 
-        // Fallback: Use placeholder SDK for development
-        return Self.placeholderSDK
+        DebugLogger.log("[PrivacyCash] Found bundle at: \(bundleURL.path)")
+
+        let bundleContent = try String(contentsOf: bundleURL, encoding: .utf8)
+        let bundleSize = bundleContent.count
+        DebugLogger.log("[PrivacyCash] Loaded SDK bundle (\(bundleSize) chars)")
+
+        // Validate bundle looks correct
+        guard bundleSize > 100_000 && bundleContent.contains("PrivacyCashBundle") else {
+            throw PrivacyProtocolError.sdkLoadFailed("Bundle appears invalid (size=\(bundleSize), missing PrivacyCashBundle marker)")
+        }
+
+        DebugLogger.log("[PrivacyCash] Bundle validation passed")
+        return bundleContent
     }
-
-    /// Placeholder SDK for development/testing
-    private static let placeholderSDK = """
-    (function() {
-        console.log('[PrivacyCash] Loading placeholder SDK...');
-
-        var privacyCash = {
-            _initialized: false,
-            _config: null,
-            _balance: 0,
-            _tokenBalances: {},
-
-            init: function(config) {
-                console.log('[PrivacyCash] Initializing with config:', JSON.stringify(config));
-                this._config = config;
-                this._initialized = true;
-                return { success: true };
-            },
-
-            deposit: function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                console.log('[PrivacyCash] Deposit:', JSON.stringify(params));
-
-                var amount = params.amount || 0;
-                this._balance += amount;
-
-                var signature = Array(88).fill(0).map(function() {
-                    return 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'[
-                        Math.floor(Math.random() * 62)
-                    ];
-                }).join('');
-
-                return {
-                    signature: signature,
-                    commitment: '0x' + Array(64).fill(0).map(function() {
-                        return Math.floor(Math.random() * 16).toString(16);
-                    }).join('')
-                };
-            },
-
-            depositSPL: function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                var mint = params.mint;
-                var amount = params.amount || 0;
-                this._tokenBalances[mint] = (this._tokenBalances[mint] || 0) + amount;
-                return this.deposit(params);
-            },
-
-            depositFrom: function(params) {
-                return this.deposit(params);
-            },
-
-            withdraw: function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                console.log('[PrivacyCash] Withdraw:', JSON.stringify(params));
-
-                var amount = params.amount || 0;
-                if (this._balance < amount) {
-                    throw new Error('Insufficient pool balance');
-                }
-                this._balance -= amount;
-
-                var signature = Array(88).fill(0).map(function() {
-                    return 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'[
-                        Math.floor(Math.random() * 62)
-                    ];
-                }).join('');
-
-                return { signature: signature };
-            },
-
-            withdrawSPL: function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                var mint = params.mint;
-                var amount = params.amount || 0;
-                if ((this._tokenBalances[mint] || 0) < amount) {
-                    throw new Error('Insufficient token balance');
-                }
-                this._tokenBalances[mint] -= amount;
-                return this.withdraw(params);
-            },
-
-            transfer: function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                console.log('[PrivacyCash] Transfer:', JSON.stringify(params));
-                return {
-                    transactionId: 'tx_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
-                };
-            },
-
-            getPrivateBalance: function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                return { balance: this._balance };
-            },
-
-            getPrivateBalanceSPL: function(params) {
-                if (!this._initialized) throw new Error('Not initialized');
-                var mint = params.mint;
-                return { balance: this._tokenBalances[mint] || 0 };
-            }
-        };
-
-        // Export to global scope (for JSContext)
-        this.privacyCash = privacyCash;
-
-        console.log('[PrivacyCash] Placeholder SDK loaded');
-    })();
-    """
 }
