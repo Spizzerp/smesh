@@ -299,7 +299,7 @@ public class MeshNetworkManager: ObservableObject {
         var nonceAccountAddress: String? = nil
 
         do {
-            let nonceEntry = try await nonceManager.reserveNonce()
+            let nonceEntry = try await nonceManager.reserveNonce()  // Actor-isolated call
             DebugLogger.log("Reserved nonce: \(nonceEntry.address)", category: "MESH-SEND")
 
             // Build durable nonce transfer

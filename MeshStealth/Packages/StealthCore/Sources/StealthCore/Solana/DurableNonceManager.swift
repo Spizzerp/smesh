@@ -109,9 +109,10 @@ public actor DurableNonceManager {
     // MARK: - Pool Management
 
     /// Reserve an available nonce for a payment
+    /// Uses cached nonce value - does NOT make network calls (safe for offline use)
     /// - Returns: The reserved nonce entry
     /// - Throws: NonceError.poolEmpty if no nonces available
-    public func reserveNonce() async throws -> NonceEntry {
+    public func reserveNonce() throws -> NonceEntry {
         // First, release any stale reservations
         releaseStaleReservations()
 
@@ -120,25 +121,13 @@ public actor DurableNonceManager {
             throw NonceError.poolEmpty
         }
 
-        // Refresh the nonce value from chain to ensure it's current
-        let entry = noncePool[index]
-        do {
-            let refreshedValue = try await fetchNonceValue(address: entry.address)
-            noncePool[index].nonceValue = refreshedValue
-        } catch {
-            // Nonce account may have been consumed externally, mark it
-            noncePool[index].state = .consumed
-            savePool()
-            throw NonceError.nonceRefreshFailed(entry.address)
-        }
-
-        // Mark as reserved
+        // Mark as reserved (use cached nonce value - no network call)
         noncePool[index].state = .reserved
         noncePool[index].reservedAt = Date()
         noncePool[index].updatedAt = Date()
         savePool()
 
-        DebugLogger.log("[NONCE] Reserved nonce: \(entry.address)", category: "NONCE")
+        DebugLogger.log("[NONCE] Reserved nonce: \(noncePool[index].address)", category: "NONCE")
         return noncePool[index]
     }
 
