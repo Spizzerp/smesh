@@ -867,16 +867,23 @@ public class StealthWalletManager: ObservableObject {
             return
         }
 
-        outgoingPaymentIntents[index].status = status
-        outgoingPaymentIntents[index].attempts += 1
-
-        if let sig = signature {
-            outgoingPaymentIntents[index].transactionSignature = sig
-        }
-
-        if let err = error {
-            outgoingPaymentIntents[index].errorMessage = err
-        }
+        // Create a new OutgoingPaymentIntent with updated values to trigger @Published
+        // (In-place modification of struct properties doesn't notify SwiftUI)
+        let current = outgoingPaymentIntents[index]
+        outgoingPaymentIntents[index] = OutgoingPaymentIntent(
+            id: current.id,
+            recipientMetaAddress: current.recipientMetaAddress,
+            stealthAddress: current.stealthAddress,
+            ephemeralPublicKey: current.ephemeralPublicKey,
+            mlkemCiphertext: current.mlkemCiphertext,
+            amount: current.amount,
+            memo: current.memo,
+            createdAt: current.createdAt,
+            status: status,
+            transactionSignature: signature ?? current.transactionSignature,
+            errorMessage: error ?? current.errorMessage,
+            attempts: current.attempts + 1
+        )
 
         saveOutgoingIntents()
 
@@ -922,17 +929,23 @@ public class StealthWalletManager: ObservableObject {
             return
         }
 
-        activityItems[index].status = status
-
-        if let sig = signature {
-            activityItems[index].transactionSignature = sig
-        }
-
-        if let err = error {
-            activityItems[index].errorMessage = err
-        }
-
-        activityItems[index].nextRetryAt = nextRetryAt
+        // Create a new ActivityItem with updated values to trigger @Published
+        // (In-place modification of struct properties doesn't notify SwiftUI)
+        let current = activityItems[index]
+        activityItems[index] = ActivityItem(
+            id: current.id,
+            type: current.type,
+            amount: current.amount,
+            timestamp: current.timestamp,
+            status: status,
+            stealthAddress: current.stealthAddress,
+            transactionSignature: signature ?? current.transactionSignature,
+            hopCount: current.hopCount,
+            errorMessage: error ?? current.errorMessage,
+            peerName: current.peerName,
+            parentActivityId: current.parentActivityId,
+            nextRetryAt: nextRetryAt
+        )
 
         saveActivityItems()
     }

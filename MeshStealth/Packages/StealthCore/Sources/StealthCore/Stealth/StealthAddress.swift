@@ -184,7 +184,7 @@ public struct StealthAddressGenerator {
 
         // 4. Combined shared secret: S = SHA256(S_classical || S_kyber)
         let combinedSecretInput = classicalSecretData + kyberSecret
-        let combinedSecret = SodiumWrapper.sha256(combinedSecretInput)
+        let combinedSecret = try SodiumWrapper.sha256(combinedSecretInput)
 
         // 5. Hash combined secret: s_h = SHA256(S)
         let sharedSecretHash = Data(SHA256.hash(data: combinedSecret))

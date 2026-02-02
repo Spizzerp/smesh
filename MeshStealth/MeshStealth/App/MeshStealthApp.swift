@@ -37,6 +37,9 @@ class AppState: ObservableObject {
             networkMonitor: meshNetworkManager.networkMonitor
         )
 
+        // Wire up settlement service bindings for progress updates
+        walletViewModel.setupSettlementBindings(meshNetworkManager.settlementService)
+
         // Wire up privacy routing service to all components (mesh, settlement, shield service, wallet manager)
         meshNetworkManager.setPrivacyRoutingService(walletViewModel.privacyRoutingService)
 

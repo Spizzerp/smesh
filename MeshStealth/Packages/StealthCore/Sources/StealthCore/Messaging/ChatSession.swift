@@ -202,8 +202,11 @@ public actor ChatSession {
         let derivedData = derived.withUnsafeBytes { Data($0) }
 
         ratchetState.setRootKey(Data(derivedData[0..<32]))
-        ratchetState.setupReceivingChain(Data(derivedData[32..<64])) // Their sending = our receiving
-        ratchetState.setupSendingChain(Data(derivedData[64..<96]))   // Our sending = their receiving
+        // Responder chains are swapped relative to initiator:
+        // - Our receiving chain must match initiator's sending chain (chain2)
+        // - Our sending chain must match initiator's receiving chain (chain1)
+        ratchetState.setupReceivingChain(Data(derivedData[64..<96])) // chain2 - matches initiator's sending
+        ratchetState.setupSendingChain(Data(derivedData[32..<64]))   // chain1 - matches initiator's receiving
 
         self.ratchetState = ratchetState
         self.state = .active

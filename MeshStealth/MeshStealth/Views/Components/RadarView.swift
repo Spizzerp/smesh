@@ -1,4 +1,5 @@
 import SwiftUI
+import StealthCore
 
 // MARK: - Radar View
 
@@ -321,7 +322,7 @@ struct PeerDot: View {
                 )
             ],
             onPeerTapped: { peer in
-                print("Tapped peer: \(peer.name ?? peer.id)")
+                DebugLogger.log("Tapped peer: \(peer.name ?? peer.id)")
             }
         )
         .padding(24)

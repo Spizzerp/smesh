@@ -58,7 +58,7 @@ public actor BlockchainScanner {
                 }
             } catch {
                 // Log but continue scanning
-                print("Error scanning address \(address): \(error)")
+                DebugLogger.log("Error scanning address \(address): \(error)")
             }
         }
 

@@ -362,10 +362,23 @@ public class MeshNetworkManager: ObservableObject {
             DebugLogger.log("BLE broadcast failed (no peers?): \(error.localizedDescription) - payment still queued", category: "MESH-SEND")
         }
 
-        // Step 4: If online, execute on-chain immediately; otherwise stay queued
+        // Step 4: If online, try to execute on-chain; otherwise stay queued
+        // Network errors are caught and payment stays queued (graceful offline fallback)
         if isOnline {
-            DebugLogger.log("Online - executing on-chain transfer immediately", category: "MESH-SEND")
-            try await executeOutgoingPayment(intent)
+            do {
+                DebugLogger.log("Online - attempting on-chain transfer", category: "MESH-SEND")
+                try await executeOutgoingPayment(intent)
+            } catch {
+                // Network error - queue for later instead of failing
+                if isNetworkError(error) {
+                    DebugLogger.log("Network unavailable - payment queued for later: \(error.localizedDescription)", category: "MESH-SEND")
+                    // Payment already queued at step 2, just log and continue
+                    // Don't throw - payment is safely queued
+                } else {
+                    // Non-network error (e.g., insufficient balance) - re-throw
+                    throw error
+                }
+            }
         } else {
             DebugLogger.log("Offline - payment queued for later execution", category: "MESH-SEND")
         }
@@ -628,6 +641,31 @@ public class MeshNetworkManager: ObservableObject {
 
         DebugLogger.error("parseMetaAddress: Neither format matched! Expected 64 or 1248 bytes, got \(decodedData.count)", category: "MESH-SEND")
         throw MeshNetworkError.invalidMetaAddress
+    }
+
+    /// Check if an error is a network/connectivity error that should trigger queuing
+    private func isNetworkError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+
+        // URLSession network errors
+        if nsError.domain == NSURLErrorDomain {
+            let networkCodes: Set<Int> = [
+                NSURLErrorTimedOut,
+                NSURLErrorCannotFindHost,
+                NSURLErrorCannotConnectToHost,
+                NSURLErrorNetworkConnectionLost,
+                NSURLErrorNotConnectedToInternet,
+                NSURLErrorDNSLookupFailed
+            ]
+            return networkCodes.contains(nsError.code)
+        }
+
+        // Check error description for common network messages
+        let description = error.localizedDescription.lowercased()
+        return description.contains("timed out") ||
+               description.contains("network") ||
+               description.contains("connection") ||
+               description.contains("offline")
     }
 
     // MARK: - Debug/Status

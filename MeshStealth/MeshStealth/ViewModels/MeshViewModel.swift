@@ -253,11 +253,11 @@ class MeshViewModel: ObservableObject {
         do {
             let message = try MeshMessage.metaAddressRequest(request: request)
             try await meshService.sendToPeer(message, peerID: peer.id)
-            print("[MESH] Sent meta-address request to peer: \(peer.id)")
+            DebugLogger.log("[MESH] Sent meta-address request to peer: \(peer.id)")
         } catch {
             lastError = error
             isRequestingAddress = false
-            print("[MESH] Failed to send meta-address request: \(error)")
+            DebugLogger.log("[MESH] Failed to send meta-address request: \(error)")
         }
     }
 
@@ -288,10 +288,10 @@ class MeshViewModel: ObservableObject {
             // Broadcast to all connected peers - the requester will filter by their request
             // This avoids peer ID mismatch issues between MeshNode IDs and CBPeripheral IDs
             try await meshService.broadcastMessage(message)
-            print("[MESH] Broadcast meta-address response")
+            DebugLogger.log("[MESH] Broadcast meta-address response")
         } catch {
             lastError = error
-            print("[MESH] Failed to send meta-address response: \(error)")
+            DebugLogger.log("[MESH] Failed to send meta-address response: \(error)")
         }
 
         // Clear the pending request
@@ -324,11 +324,11 @@ class MeshViewModel: ObservableObject {
             )
             try await meshService.sendToPeer(message, peerID: peer.id)
 
-            print("[MESH] Sent chat request to peer: \(peer.id)")
+            DebugLogger.log("[MESH] Sent chat request to peer: \(peer.id)")
         } catch {
             lastError = error
             isChatConnecting = false
-            print("[MESH] Failed to start chat: \(error)")
+            DebugLogger.log("[MESH] Failed to start chat: \(error)")
         }
     }
 
@@ -351,10 +351,10 @@ class MeshViewModel: ObservableObject {
             activeChatSessionID = request.sessionID
             pendingChatRequest = nil
 
-            print("[MESH] Accepted chat request, session: \(request.sessionID)")
+            DebugLogger.log("[MESH] Accepted chat request, session: \(request.sessionID)")
         } catch {
             lastError = error
-            print("[MESH] Failed to accept chat request: \(error)")
+            DebugLogger.log("[MESH] Failed to accept chat request: \(error)")
         }
     }
 
@@ -372,7 +372,7 @@ class MeshViewModel: ObservableObject {
             )
             try await meshService.broadcastMessage(message)
         } catch {
-            print("[MESH] Failed to send decline: \(error)")
+            DebugLogger.log("[MESH] Failed to send decline: \(error)")
         }
 
         pendingChatRequest = nil
@@ -388,7 +388,7 @@ class MeshViewModel: ObservableObject {
             try await meshService.broadcastMessage(message)
         } catch {
             lastError = error
-            print("[MESH] Failed to send chat message: \(error)")
+            DebugLogger.log("[MESH] Failed to send chat message: \(error)")
         }
     }
 
@@ -401,7 +401,7 @@ class MeshViewModel: ObservableObject {
             )
             try await meshService.broadcastMessage(message)
         } catch {
-            print("[MESH] Failed to send chat end: \(error)")
+            DebugLogger.log("[MESH] Failed to send chat end: \(error)")
         }
     }
 
@@ -435,11 +435,11 @@ class MeshViewModel: ObservableObject {
             try await chatManager.handleAccept(accept)
             activeChatSessionID = accept.sessionID
             isChatConnecting = false
-            print("[MESH] Chat session established: \(accept.sessionID)")
+            DebugLogger.log("[MESH] Chat session established: \(accept.sessionID)")
         } catch {
             lastError = error
             isChatConnecting = false
-            print("[MESH] Failed to handle chat accept: \(error)")
+            DebugLogger.log("[MESH] Failed to handle chat accept: \(error)")
         }
     }
 
@@ -448,7 +448,7 @@ class MeshViewModel: ObservableObject {
 
         await chatManager.handleDecline(decline)
         isChatConnecting = false
-        print("[MESH] Chat request declined: \(decline.sessionID)")
+        DebugLogger.log("[MESH] Chat request declined: \(decline.sessionID)")
     }
 
     private func handleChatMessage(_ message: ChatMessagePayload) async {
@@ -457,7 +457,7 @@ class MeshViewModel: ObservableObject {
         do {
             _ = try await chatManager.handleMessage(message)
         } catch {
-            print("[MESH] Failed to handle chat message: \(error)")
+            DebugLogger.log("[MESH] Failed to handle chat message: \(error)")
         }
     }
 
@@ -471,7 +471,7 @@ class MeshViewModel: ObservableObject {
             activeChatSessionID = nil
         }
 
-        print("[MESH] Chat session ended: \(end.sessionID)")
+        DebugLogger.log("[MESH] Chat session ended: \(end.sessionID)")
     }
 
     // MARK: - Computed Properties

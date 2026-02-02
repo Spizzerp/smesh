@@ -116,7 +116,7 @@ public actor ChatManager {
 
         // Validate request
         guard request.isValid else {
-            print("[ChatManager] Invalid request received")
+            DebugLogger.log("[ChatManager] Invalid request received")
             return
         }
 

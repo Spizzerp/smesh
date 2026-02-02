@@ -1,6 +1,27 @@
 import Foundation
 @preconcurrency import Sodium
 
+/// Errors from sodium cryptographic operations
+public enum SodiumError: Error, LocalizedError {
+    case hashFailed
+    case pointAdditionFailed
+    case scalarMultiplicationFailed
+    case invalidKeyLength
+
+    public var errorDescription: String? {
+        switch self {
+        case .hashFailed:
+            return "SHA-256 hash operation failed"
+        case .pointAdditionFailed:
+            return "Ed25519 point addition failed"
+        case .scalarMultiplicationFailed:
+            return "Ed25519 scalar multiplication failed"
+        case .invalidKeyLength:
+            return "Invalid key length"
+        }
+    }
+}
+
 /// Wrapper for libsodium ed25519 point arithmetic operations.
 /// Required for stealth address derivation (EIP-5564 style).
 ///
@@ -278,10 +299,10 @@ public struct SodiumWrapper {
     /// SHA-256 hash
     /// - Parameter data: Data to hash
     /// - Returns: 32-byte hash
-    public static func sha256(_ data: Data) -> Data {
+    /// - Throws: SodiumError.hashFailed if hashing fails
+    public static func sha256(_ data: Data) throws -> Data {
         guard let hash = sodium.genericHash.hash(message: Bytes(data), outputLength: 32) else {
-            // Fallback - should never fail with valid input
-            fatalError("SHA-256 hash failed")
+            throw SodiumError.hashFailed
         }
         return Data(hash)
     }

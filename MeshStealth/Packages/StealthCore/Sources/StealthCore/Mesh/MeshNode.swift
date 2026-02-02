@@ -360,15 +360,22 @@ public actor MeshNode {
     // MARK: - Chat Message Processing
 
     private func processChatRequest(_ message: MeshMessage) -> ProcessResult {
+        DebugLogger.log("[MeshNode] Processing chat request...")
+
         guard let request = try? message.decodeChatRequest() else {
+            DebugLogger.log("[MeshNode] Failed to decode chat request")
             return .invalid
         }
+
+        DebugLogger.log("[MeshNode] Decoded chat request: sessionID=\(request.sessionID), requester=\(request.requesterPeerID.prefix(8))...")
 
         // Validate request
         guard request.isValid else {
+            DebugLogger.log("[MeshNode] Chat request validation failed")
             return .invalid
         }
 
+        DebugLogger.log("[MeshNode] Chat request valid, sending to subject...")
         chatRequestSubject.send(request)
         return .processed
     }
