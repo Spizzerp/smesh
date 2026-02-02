@@ -216,9 +216,12 @@ struct SettledPaymentRow: View {
                 Text(truncatedAddress)
                     .font(.subheadline)
                 if let sig = payment.settlementSignature {
-                    Text("Tx: \(sig.prefix(8))...")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 2) {
+                        Text("Tx:")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        TransactionLink(signature: sig, truncateLength: 8, cluster: .devnet)
+                    }
                 }
             }
 

@@ -222,8 +222,7 @@ struct TerminalSettlementToast: View {
                     .foregroundColor(TerminalPalette.textPrimary)
 
                 if let sig = result.signature {
-                    Text("\(sig.prefix(12))...")
-                        .foregroundColor(TerminalPalette.textMuted)
+                    TransactionLink(signature: sig, truncateLength: 12, cluster: .devnet)
                 } else if let error = result.error {
                     Text(error.localizedDescription.prefix(30) + "...")
                         .foregroundColor(TerminalPalette.textMuted)

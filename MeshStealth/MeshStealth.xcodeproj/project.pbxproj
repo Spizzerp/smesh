@@ -38,6 +38,7 @@
 		RADAR01 /* RadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RADAR00 /* RadarView.swift */; };
 		RADAR02 /* PeerDetailCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = RADAR03 /* PeerDetailCard.swift */; };
 		RADAR04 /* PeerNicknameStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = RADAR05 /* PeerNicknameStore.swift */; };
+		TXLINK01 /* TransactionLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = TXLINK00 /* TransactionLink.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -73,6 +74,7 @@
 		RADAR00 /* RadarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadarView.swift; sourceTree = "<group>"; };
 		RADAR03 /* PeerDetailCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerDetailCard.swift; sourceTree = "<group>"; };
 		RADAR05 /* PeerNicknameStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerNicknameStore.swift; sourceTree = "<group>"; };
+		TXLINK00 /* TransactionLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransactionLink.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -105,6 +107,7 @@
 				TERM08 /* TerminalChatBubble.swift */,
 				RADAR00 /* RadarView.swift */,
 				RADAR03 /* PeerDetailCard.swift */,
+				TXLINK00 /* TransactionLink.swift */,
 			);
 			name = Components;
 			path = Components;
@@ -302,6 +305,7 @@
 				RADAR01 /* RadarView.swift in Sources */,
 				RADAR02 /* PeerDetailCard.swift in Sources */,
 				RADAR04 /* PeerNicknameStore.swift in Sources */,
+				TXLINK01 /* TransactionLink.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

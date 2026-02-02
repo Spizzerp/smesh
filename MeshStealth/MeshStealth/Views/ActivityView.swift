@@ -276,9 +276,7 @@ struct TerminalActivityCard: View {
 
                     if activity.status == .completed,
                        let sig = activity.transactionSignature {
-                        Text("\(sig.prefix(6))...")
-                            .font(TerminalTypography.label())
-                            .foregroundColor(TerminalPalette.textMuted)
+                        TransactionLink(signature: sig, truncateLength: 6, cluster: .devnet)
                     }
 
                     // Retry button for failed mesh receives
@@ -466,9 +464,7 @@ struct TerminalChildActivityRow: View {
                     .foregroundColor(TerminalPalette.textDim)
 
                 if let sig = activity.transactionSignature {
-                    Text("\(sig.prefix(8))...")
-                        .font(TerminalTypography.label())
-                        .foregroundColor(TerminalPalette.textMuted)
+                    TransactionLink(signature: sig, truncateLength: 8, cluster: .devnet)
                 }
             }
 
