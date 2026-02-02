@@ -78,6 +78,12 @@ struct ActivityView: View {
                                     showPendingOnly: $showPendingOnly
                                 )
 
+                                // Queued outgoing payments section
+                                if !walletViewModel.outgoingPaymentIntents.isEmpty {
+                                    OutgoingIntentsSection(intents: walletViewModel.outgoingPaymentIntents)
+                                        .padding(.horizontal, 16)
+                                }
+
                                 LazyVStack(spacing: 8) {
                                     ForEach(sortedDateKeys, id: \.self) { dateKey in
                                         Section {
@@ -627,6 +633,107 @@ struct TerminalFilterChip: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Outgoing Intents Section
+
+struct OutgoingIntentsSection: View {
+    let intents: [OutgoingPaymentIntent]
+
+    var body: some View {
+        VStack(spacing: 8) {
+            // Section header
+            HStack {
+                Text("// QUEUED_OUTGOING")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.warning)
+                Spacer()
+                Text("[\(intents.count)]")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textMuted)
+            }
+
+            // Intent cards
+            ForEach(intents, id: \.id) { intent in
+                OutgoingIntentCard(intent: intent)
+            }
+        }
+    }
+}
+
+struct OutgoingIntentCard: View {
+    let intent: OutgoingPaymentIntent
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Icon
+            Text("[→]")
+                .font(TerminalTypography.body(14))
+                .foregroundColor(statusColor)
+
+            // Details
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("SEND")
+                        .font(TerminalTypography.body(12))
+                        .foregroundColor(TerminalPalette.textPrimary)
+
+                    statusBadge
+                }
+
+                Text("to: \(intent.recipientMetaAddress.prefix(12))...")
+                    .font(TerminalTypography.label())
+                    .foregroundColor(TerminalPalette.textMuted)
+            }
+
+            Spacer()
+
+            // Amount
+            Text(String(format: "-%.4f SOL", Double(intent.amount) / 1_000_000_000))
+                .font(TerminalTypography.body(12))
+                .foregroundColor(statusColor)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 2)
+                .fill(TerminalPalette.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2)
+                        .stroke(statusColor.opacity(0.5), lineWidth: 1)
+                )
+        )
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        switch intent.status {
+        case .queued:
+            Text("[QUEUED]")
+                .font(TerminalTypography.label())
+                .foregroundColor(TerminalPalette.warning)
+        case .sending:
+            Text("[SENDING]")
+                .font(TerminalTypography.label())
+                .foregroundColor(TerminalPalette.cyan)
+        case .confirmed:
+            Text("[CONFIRMED]")
+                .font(TerminalTypography.label())
+                .foregroundColor(TerminalPalette.success)
+        case .failed:
+            Text("[FAILED]")
+                .font(TerminalTypography.label())
+                .foregroundColor(TerminalPalette.error)
+        }
+    }
+
+    private var statusColor: Color {
+        switch intent.status {
+        case .queued: return TerminalPalette.warning
+        case .sending: return TerminalPalette.cyan
+        case .confirmed: return TerminalPalette.success
+        case .failed: return TerminalPalette.error
+        }
     }
 }
 

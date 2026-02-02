@@ -90,8 +90,17 @@ public actor ShieldService {
     private let rpcClient: DevnetFaucet
     private let estimatedFee: UInt64 = 5000  // 0.000005 SOL per signature
 
+    /// Optional privacy routing service for enhanced shielding
+    /// When enabled, deposits into privacy pool first to hide amount
+    private var privacyRoutingService: PrivacyRoutingService?
+
     public init(rpcClient: DevnetFaucet = DevnetFaucet()) {
         self.rpcClient = rpcClient
+    }
+
+    /// Set the privacy routing service for enhanced shielding
+    public func setPrivacyRoutingService(_ service: PrivacyRoutingService?) {
+        self.privacyRoutingService = service
     }
 
     /// Shield funds from main wallet to a stealth address
@@ -196,6 +205,73 @@ public actor ShieldService {
         )
     }
 
+    /// Shield funds with privacy enhancement
+    /// Uses privacy protocol to hide the deposit amount (Bulletproof or ZK)
+    /// - Parameters:
+    ///   - lamports: Amount to shield in lamports
+    ///   - mainWallet: The main wallet to transfer from
+    ///   - stealthKeyPair: Our stealth keypair (to generate self-stealth address)
+    /// - Returns: ShieldResult with the generated stealth address and transaction details
+    public func shieldWithPrivacy(
+        lamports: UInt64,
+        mainWallet: SolanaWallet,
+        stealthKeyPair: StealthKeyPair
+    ) async throws -> ShieldResult {
+        guard let privacyService = privacyRoutingService,
+              await privacyService.shouldUsePrivacyRouting(for: lamports) else {
+            // Fallback to standard shielding if privacy not available
+            return try await shield(
+                lamports: lamports,
+                mainWallet: mainWallet,
+                stealthKeyPair: stealthKeyPair
+            )
+        }
+
+        DebugLogger.log("[SHIELD-PRIVACY] Using privacy-enhanced shielding via \(await privacyService.selectedProtocol.displayName)")
+
+        // 1. Check balance
+        let mainAddress = await mainWallet.address
+        let balance = try await rpcClient.getBalance(address: mainAddress)
+        let requiredAmount = lamports + estimatedFee
+
+        guard balance >= requiredAmount else {
+            throw ShieldError.insufficientBalance(available: balance, required: requiredAmount)
+        }
+
+        // 2. Generate stealth address for ourselves
+        let metaAddress = stealthKeyPair.hybridMetaAddressString
+        let stealthResult: StealthAddressResult
+        do {
+            stealthResult = try StealthAddressGenerator.generateStealthAddressAuto(
+                metaAddressString: metaAddress
+            )
+        } catch {
+            throw ShieldError.stealthAddressGenerationFailed
+        }
+
+        // 3. Deposit into privacy pool first (hides amount)
+        DebugLogger.log("[SHIELD-PRIVACY] Depositing \(lamports) lamports into privacy pool")
+        let depositResult = try await privacyService.deposit(amount: lamports)
+        DebugLogger.log("[SHIELD-PRIVACY] Deposit complete: \(depositResult.signature)")
+
+        // 4. Withdraw to stealth address (unlinkable)
+        DebugLogger.log("[SHIELD-PRIVACY] Withdrawing to stealth address \(stealthResult.stealthAddress)")
+        let withdrawResult = try await privacyService.withdraw(
+            amount: lamports,
+            destination: stealthResult.stealthAddress
+        )
+        DebugLogger.log("[SHIELD-PRIVACY] Privacy-enhanced shield complete: \(withdrawResult.signature)")
+
+        return ShieldResult(
+            stealthAddress: stealthResult.stealthAddress,
+            ephemeralPublicKey: stealthResult.ephemeralPublicKey,
+            mlkemCiphertext: stealthResult.mlkemCiphertext,
+            amount: lamports,
+            signature: withdrawResult.signature,
+            viewTag: stealthResult.viewTag
+        )
+    }
+
     // MARK: - Unshield Operations
 
     /// Unshield funds from a stealth address back to main wallet
@@ -212,18 +288,18 @@ public actor ShieldService {
         lamports: UInt64? = nil
     ) async throws -> UnshieldResult {
 
-        print("[UNSHIELD] Starting unshield for payment \(payment.id)")
-        print("[UNSHIELD] Stealth address: \(payment.stealthAddress)")
-        print("[UNSHIELD] Ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
-        print("[UNSHIELD] Hop count: \(payment.hopCount)")
-        print("[UNSHIELD] Is hybrid: \(payment.isHybrid)")
+        DebugLogger.log("[UNSHIELD] Starting unshield for payment \(payment.id)")
+        DebugLogger.log("[UNSHIELD] Stealth address: \(payment.stealthAddress)")
+        DebugLogger.log("[UNSHIELD] Ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
+        DebugLogger.log("[UNSHIELD] Hop count: \(payment.hopCount)")
+        DebugLogger.log("[UNSHIELD] Is hybrid: \(payment.isHybrid)")
 
         // 1. Check stealth address balance
         let stealthBalance = try await rpcClient.getBalance(address: payment.stealthAddress)
-        print("[UNSHIELD] Stealth balance: \(stealthBalance) lamports")
+        DebugLogger.log("[UNSHIELD] Stealth balance: \(stealthBalance) lamports")
 
         guard stealthBalance > estimatedFee else {
-            print("[UNSHIELD] ERROR: Balance (\(stealthBalance)) <= fee (\(estimatedFee)) - stealthAddressEmpty")
+            DebugLogger.log("[UNSHIELD] ERROR: Balance (\(stealthBalance)) <= fee (\(estimatedFee)) - stealthAddressEmpty")
             throw ShieldError.stealthAddressEmpty
         }
 
@@ -233,6 +309,53 @@ public actor ShieldService {
         guard stealthBalance >= transferAmount + estimatedFee else {
             throw ShieldError.insufficientBalance(available: stealthBalance, required: transferAmount + estimatedFee)
         }
+
+        // === PRIVACY POOL ROUTING ===
+        // If privacy routing is enabled, route through the privacy pool to break on-chain link
+        if let privacyService = privacyRoutingService,
+           await privacyService.shouldUsePrivacyRouting(for: transferAmount) {
+
+            DebugLogger.log("[UNSHIELD] 🔒 Using privacy pool routing via \(await privacyService.selectedProtocol.displayName)")
+            DebugLogger.log("[UNSHIELD] This will: stealth → pool → main (breaking on-chain link)")
+
+            do {
+                // Route through privacy pool: stealth → pool → main
+                let txSignature = try await privacyService.routeTransfer(
+                    from: payment.stealthAddress,
+                    to: mainWalletAddress,
+                    amount: transferAmount,
+                    spendingKey: spendingKey
+                )
+
+                DebugLogger.log("[UNSHIELD] 🔒 Privacy-routed unshield complete: \(txSignature)")
+
+                return UnshieldResult(
+                    stealthAddress: payment.stealthAddress,
+                    amount: transferAmount,
+                    signature: txSignature,
+                    paymentId: payment.id
+                )
+            } catch {
+                // Check if fallback is allowed
+                let config = await privacyService.configuration
+                if config.fallbackToDirect {
+                    DebugLogger.log("[UNSHIELD] ⚠️ Privacy routing failed, falling back to direct: \(error)")
+                    // Continue with direct transfer below
+                } else {
+                    DebugLogger.log("[UNSHIELD] ❌ Privacy routing failed (no fallback): \(error)")
+                    throw ShieldError.transactionFailed("Privacy routing failed: \(error.localizedDescription)")
+                }
+            }
+        } else {
+            if privacyRoutingService != nil {
+                DebugLogger.log("[UNSHIELD] Privacy routing available but not enabled for this amount")
+            } else {
+                DebugLogger.log("[UNSHIELD] No privacy routing configured, using direct transfer")
+            }
+        }
+
+        // === DIRECT TRANSFER (fallback or default) ===
+        DebugLogger.log("[UNSHIELD] Using direct transfer: stealth → main")
 
         // 3. Create wallet from spending key (raw scalar, not seed-expanded)
         // The spending key is a raw scalar derived as: p = m + hash(S) mod L
@@ -248,9 +371,9 @@ public actor ShieldService {
         let derivedAddress = await stealthWallet.address
         guard derivedAddress == payment.stealthAddress else {
             // Debug: Log the mismatch for troubleshooting
-            print("Stealth address mismatch!")
-            print("  Expected: \(payment.stealthAddress)")
-            print("  Derived:  \(derivedAddress)")
+            DebugLogger.log("Stealth address mismatch!")
+            DebugLogger.log("  Expected: \(payment.stealthAddress)")
+            DebugLogger.log("  Derived:  \(derivedAddress)")
             throw ShieldError.keyDerivationFailed
         }
 
@@ -375,9 +498,9 @@ public actor ShieldService {
         // 5. Verify the derived wallet matches the source stealth address
         let derivedAddress = await sourceWallet.address
         guard derivedAddress == payment.stealthAddress else {
-            print("Stealth address mismatch in hop!")
-            print("  Expected: \(payment.stealthAddress)")
-            print("  Derived:  \(derivedAddress)")
+            DebugLogger.log("Stealth address mismatch in hop!")
+            DebugLogger.log("  Expected: \(payment.stealthAddress)")
+            DebugLogger.log("  Derived:  \(derivedAddress)")
             throw ShieldError.keyDerivationFailed
         }
 
@@ -425,29 +548,29 @@ public actor ShieldService {
         try await rpcClient.waitForConfirmation(signature: txSignature, timeout: 30)
 
         // 11. Verify funds arrived at destination (with retry for RPC propagation)
-        print("[HOP] Transaction confirmed: \(txSignature)")
-        print("[HOP] Source: \(payment.stealthAddress)")
-        print("[HOP] Destination: \(stealthResult.stealthAddress)")
-        print("[HOP] Amount: \(transferAmount) lamports")
+        DebugLogger.log("[HOP] Transaction confirmed: \(txSignature)")
+        DebugLogger.log("[HOP] Source: \(payment.stealthAddress)")
+        DebugLogger.log("[HOP] Destination: \(stealthResult.stealthAddress)")
+        DebugLogger.log("[HOP] Amount: \(transferAmount) lamports")
 
         // Wait a moment for RPC to propagate
         try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
 
         // Verify destination balance
         let destBalance = try await rpcClient.getBalance(address: stealthResult.stealthAddress)
-        print("[HOP] Destination balance after hop: \(destBalance) lamports")
+        DebugLogger.log("[HOP] Destination balance after hop: \(destBalance) lamports")
 
         if destBalance < transferAmount {
-            print("[HOP] WARNING: Destination balance (\(destBalance)) less than transfer amount (\(transferAmount))")
-            print("[HOP] This may indicate the transaction failed or RPC hasn't propagated yet")
+            DebugLogger.log("[HOP] WARNING: Destination balance (\(destBalance)) less than transfer amount (\(transferAmount))")
+            DebugLogger.log("[HOP] This may indicate the transaction failed or RPC hasn't propagated yet")
         }
 
         // Verify we can derive the spending key for the destination
-        print("[HOP] Ephemeral public key: \(stealthResult.ephemeralPublicKey.base58EncodedString)")
+        DebugLogger.log("[HOP] Ephemeral public key: \(stealthResult.ephemeralPublicKey.base58EncodedString)")
         if let ciphertext = stealthResult.mlkemCiphertext {
-            print("[HOP] MLKEM ciphertext present (\(ciphertext.count) bytes) - hybrid mode")
+            DebugLogger.log("[HOP] MLKEM ciphertext present (\(ciphertext.count) bytes) - hybrid mode")
         } else {
-            print("[HOP] Classical mode (no MLKEM ciphertext)")
+            DebugLogger.log("[HOP] Classical mode (no MLKEM ciphertext)")
         }
 
         return HopResult(
@@ -513,9 +636,9 @@ public actor ShieldService {
             transferAmount = sourceBalance - estimatedFee
         }
 
-        print("[SEND-STEALTH] Sending \(transferAmount) lamports\(lamports == nil ? " (ALL - closing account)" : "")")
-        print("[SEND-STEALTH] From: \(fromStealthAddress)")
-        print("[SEND-STEALTH] To: \(toAddress)")
+        DebugLogger.log("[SEND-STEALTH] Sending \(transferAmount) lamports\(lamports == nil ? " (ALL - closing account)" : "")")
+        DebugLogger.log("[SEND-STEALTH] From: \(fromStealthAddress)")
+        DebugLogger.log("[SEND-STEALTH] To: \(toAddress)")
 
         // 2. Create wallet from spending key
         let sourceWallet: SolanaWallet
@@ -528,9 +651,9 @@ public actor ShieldService {
         // 3. Verify the derived wallet matches the source address
         let derivedAddress = await sourceWallet.address
         guard derivedAddress == fromStealthAddress else {
-            print("[SEND-STEALTH] Address mismatch!")
-            print("[SEND-STEALTH]   Expected: \(fromStealthAddress)")
-            print("[SEND-STEALTH]   Derived:  \(derivedAddress)")
+            DebugLogger.log("[SEND-STEALTH] Address mismatch!")
+            DebugLogger.log("[SEND-STEALTH]   Expected: \(fromStealthAddress)")
+            DebugLogger.log("[SEND-STEALTH]   Derived:  \(derivedAddress)")
             throw ShieldError.keyDerivationFailed
         }
 
@@ -577,7 +700,7 @@ public actor ShieldService {
         // 8. Wait for confirmation
         try await rpcClient.waitForConfirmation(signature: txSignature, timeout: 30)
 
-        print("[SEND-STEALTH] Transaction confirmed: \(txSignature)")
+        DebugLogger.log("[SEND-STEALTH] Transaction confirmed: \(txSignature)")
         return txSignature
     }
 }

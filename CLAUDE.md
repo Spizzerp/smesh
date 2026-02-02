@@ -129,16 +129,29 @@ smesh/
 │   ├── MeshStealth.xcodeproj    # Xcode project
 │   ├── MeshStealth/
 │   │   ├── App/
-│   │   │   └── MeshStealthApp.swift
+│   │   │   └── MeshStealthApp.swift    # App entry point, AppState coordinator
 │   │   ├── Views/
+│   │   │   ├── Components/
+│   │   │   │   ├── TerminalStyle.swift         # Color palette, typography
+│   │   │   │   ├── TerminalButtons.swift       # Button components
+│   │   │   │   ├── TerminalInputs.swift        # Input components
+│   │   │   │   ├── TerminalWalletContainer.swift
+│   │   │   │   ├── TerminalBadges.swift        # Status badges
+│   │   │   │   ├── TerminalAnimations.swift    # Scanline, glow effects
+│   │   │   │   ├── TerminalChatBubble.swift    # Chat message bubbles
+│   │   │   │   └── RadarView.swift             # Mesh peer radar
 │   │   │   ├── WalletView.swift
+│   │   │   ├── ActivityView.swift
+│   │   │   ├── NearbyPeersView.swift
 │   │   │   ├── SendPaymentView.swift
-│   │   │   ├── ReceiveView.swift
-│   │   │   ├── MeshStatusView.swift
-│   │   │   └── QRScannerView.swift
+│   │   │   ├── PendingPaymentsView.swift
+│   │   │   ├── SettingsView.swift
+│   │   │   ├── ChatView.swift                  # E2E encrypted chat
+│   │   │   └── WalletBackupView.swift
 │   │   ├── ViewModels/
 │   │   │   ├── WalletViewModel.swift
-│   │   │   └── MeshViewModel.swift
+│   │   │   ├── MeshViewModel.swift
+│   │   │   └── ChatViewModel.swift             # Chat session state
 │   │   ├── Resources/
 │   │   │   └── Assets.xcassets
 │   │   └── Info.plist
@@ -157,18 +170,38 @@ smesh/
 │           │   │   └── StealthScanner.swift     # Receiver-side scanning
 │           │   ├── Storage/
 │           │   │   └── KeychainService.swift    # Secure key storage
-│           │   ├── Network/
+│           │   ├── Mesh/
 │           │   │   ├── BLEMeshService.swift     # CoreBluetooth mesh
 │           │   │   ├── MeshNode.swift           # Peer state (actor)
 │           │   │   ├── MeshPayload.swift        # Message format
 │           │   │   └── MessageRelay.swift       # Store-and-forward
+│           │   ├── Messaging/
+│           │   │   ├── DoubleRatchetEngine.swift # Signal-style ratchet
+│           │   │   ├── ChatSession.swift        # Single chat session
+│           │   │   └── ChatManager.swift        # Multi-session manager
 │           │   ├── Solana/
 │           │   │   ├── SolanaRPCClient.swift    # Helius RPC
-│           │   │   ├── TransactionBuilder.swift # SPL transfers
-│           │   │   └── SettlementService.swift  # Auto-settle
+│           │   │   ├── SolanaTransaction.swift  # Transaction construction
+│           │   │   ├── DevnetFaucet.swift       # Devnet airdrop
+│           │   │   ├── BlockchainScanner.swift  # Batch stealth scanning
+│           │   │   └── StealthPQClient.swift    # PQ stealth operations
+│           │   ├── Privacy/
+│           │   │   ├── PrivacyRoutingService.swift  # Protocol coordinator
+│           │   │   ├── PrivacyCashProvider.swift    # Privacy Cash integration
+│           │   │   ├── ShadowWireProvider.swift     # ShadowWire integration
+│           │   │   └── WebViewBridge.swift          # JS bridge for protocols
+│           │   ├── Integration/
+│           │   │   ├── MeshNetworkManager.swift # High-level coordinator
+│           │   │   ├── StealthWalletManager.swift
+│           │   │   ├── ShieldService.swift      # Shield/unshield
+│           │   │   ├── MixingService.swift      # Auto-mixing
+│           │   │   ├── SettlementService.swift  # Auto-settle
+│           │   │   ├── NetworkMonitor.swift     # Connectivity
+│           │   │   └── PayloadEncryption.swift  # Mesh encryption
 │           │   └── Extensions/
 │           │       ├── Data+Extensions.swift
-│           │       └── String+Base58.swift
+│           │       ├── String+Base58.swift
+│           │       └── DebugLogger.swift        # #if DEBUG logging
 │           └── Tests/StealthCoreTests/
 │               ├── StealthKeyPairTests.swift
 │               ├── StealthAddressTests.swift
@@ -176,17 +209,7 @@ smesh/
 │               └── CryptoRoundtripTests.swift
 │
 ├── MeshStealthAndroid/          # Android App (post-hackathon)
-│   ├── app/
-│   │   └── src/main/kotlin/
-│   │       ├── ui/              # Jetpack Compose
-│   │       └── MeshStealthApp.kt
-│   ├── core/
-│   │   └── src/main/kotlin/
-│   │       ├── crypto/          # libsodium-jni, liboqs-java
-│   │       ├── stealth/         # Kotlin port of StealthCore
-│   │       ├── mesh/            # Android BLE
-│   │       └── solana/          # Solana-KMP
-│   └── build.gradle.kts
+│   └── ...
 │
 └── docs/
     ├── mesh-stealth-transfers-spec.md
@@ -217,12 +240,111 @@ smesh/
 | `MeshPayload.swift` | Message format with version, type, TTL, encrypted data |
 | `MessageRelay.swift` | Store-and-forward queue, settlement queue |
 
+### Encrypted Mesh Messaging
+| File | Purpose |
+|------|---------|
+| `DoubleRatchetEngine.swift` | Signal-style Double Ratchet with PQ hybridization |
+| `ChatSession.swift` | Single chat session state (ratchet keys, message chain) |
+| `ChatManager.swift` | Manages multiple chat sessions, key exchange coordination |
+| `ChatViewModel.swift` | UI state for chat interface |
+
+**Key Exchange Flow:**
+1. Initiator sends `ChatRequest` with X3DH prekey bundle + ML-KEM public key
+2. Responder derives shared secret via hybrid X3DH + ML-KEM encapsulation
+3. Both initialize Double Ratchet with combined secret
+4. Messages encrypted with ratcheting keys (forward secrecy + PCS)
+
+**Security Properties:**
+- Perfect Forward Secrecy: Compromised keys don't reveal past messages
+- Post-Compromise Security: New keys generated after each exchange
+- Quantum Resistance: Hybrid X25519 + ML-KEM for all key exchanges
+
 ### Solana Integration
 | File | Purpose |
 |------|---------|
 | `SolanaRPCClient.swift` | Helius RPC interaction, transaction submission |
-| `TransactionBuilder.swift` | SPL token transfer instruction construction |
-| `SettlementService.swift` | Network monitoring, auto-settlement when online |
+| `SolanaTransaction.swift` | Transaction construction and signing |
+| `DevnetFaucet.swift` | Devnet airdrop requests and transaction helpers |
+| `BlockchainScanner.swift` | Batch scanning for stealth payments, hybrid decryption |
+| `StealthPQClient.swift` | Post-quantum stealth address client operations |
+
+### Integration Services
+| File | Purpose |
+|------|---------|
+| `MeshNetworkManager.swift` | High-level coordinator for mesh, wallet, and settlement |
+| `StealthWalletManager.swift` | Wallet state, activity tracking, payment management |
+| `ShieldService.swift` | Shield (main→stealth) and unshield (stealth→main) operations |
+| `MixingService.swift` | Automatic mixing with random 1-5 hops for privacy |
+| `SettlementService.swift` | Auto-settlement of pending payments when online |
+| `NetworkMonitor.swift` | NWPathMonitor wrapper for connectivity detection |
+| `PayloadEncryption.swift` | X25519/AES-256-GCM encryption for mesh payloads |
+
+### Privacy Protocol Integration
+| File | Purpose |
+|------|---------|
+| `PrivacyRoutingService.swift` | Protocol selection and routing coordination |
+| `PrivacyCashProvider.swift` | Privacy Cash integration (deposit/withdraw pools) |
+| `ShadowWireProvider.swift` | ShadowWire protocol integration |
+| `WebViewBridge.swift` | JavaScript bridge for WebView-based protocols |
+| `PrivacyProtocol.swift` | Protocol interface definition |
+
+**Supported Protocols:**
+- `direct` - No privacy routing (default)
+- `privacyCash` - Privacy Cash pool-based mixing
+- `shadowWire` - ShadowWire protocol routing
+
+**Usage:**
+```swift
+// Set privacy protocol
+await walletViewModel.setPrivacyProtocol(.privacyCash)
+walletViewModel.setPrivacyEnabled(true)
+
+// Payments automatically route through selected protocol
+```
+
+**SDK Implementation Notes:**
+
+| Protocol | Bridge | Bundle Size | Notes |
+|----------|--------|-------------|-------|
+| Privacy Cash | JSContext | 8.4 MB | Pure JS, no WASM needed |
+| ShadowWire | WKWebView | 4.8 MB | Requires WASM for ZK proofs |
+
+**ShadowWire SDK Requirements:**
+- WKWebView required (not JSContext) because the SDK uses WASM for Bulletproof ZK proofs
+- **Buffer polyfill required**: The SDK uses Node.js `Buffer` class (via `blake-hash` dependency). WebViewBridge includes an inline Buffer polyfill that must be defined before bundle execution
+- Bundles are injected via base64-encoded chunks (500KB each) to handle large file sizes
+- Console.log from WebView is captured and forwarded to DebugLogger for debugging
+- Runs in **simulation mode** without merchant credentials (get from https://radrlabs.io for live mode)
+
+**Privacy Cash SDK Requirements:**
+- JSContext sufficient (lighter weight than WKWebView)
+- Web API polyfills included: TextEncoder, TextDecoder, atob/btoa, crypto.getRandomValues, Buffer, process
+- No API key required for devnet
+
+### UI Components (Terminal-Style Design)
+| File | Purpose |
+|------|---------|
+| `TerminalStyle.swift` | Color palette (TerminalPalette), typography, view modifiers |
+| `TerminalButtons.swift` | Primary, secondary, icon, and text button components |
+| `TerminalInputs.swift` | Amount input with MAX button, text fields |
+| `TerminalWalletContainer.swift` | Public and Stealth wallet card containers |
+| `TerminalBadges.swift` | Network, quantum, address, and status indicator badges |
+| `TerminalAnimations.swift` | Pulsing glows, scanline overlays, typing effects |
+| `TerminalChatBubble.swift` | Chat message bubbles with PQ status indicators |
+
+### Radar Visualization
+| File | Purpose |
+|------|---------|
+| `RadarView.swift` | Interactive radar showing nearby mesh peers |
+| `RadarBackground.swift` | Pulsating nebula background with portal images |
+| `PeerDot.swift` | Individual peer indicator with signal strength colors |
+| `PeerDetailCard.swift` | Detailed peer info card on selection |
+
+**Radar Features:**
+- RSSI-based positioning (stronger signal = closer to center)
+- Deterministic angle from peer ID hash
+- PQ-capable peers show purple ring indicator
+- Connected peers show green status dot
 
 ## Coding Conventions
 

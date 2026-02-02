@@ -167,6 +167,78 @@ public actor DevnetFaucet {
         return signature
     }
 
+    /// Get nonce account data
+    /// - Parameter address: Base58-encoded nonce account address
+    /// - Returns: NonceAccountData containing the current nonce value
+    public func getNonceAccount(address: String) async throws -> NonceAccountData {
+        let body: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getAccountInfo",
+            "params": [
+                address,
+                ["encoding": "base64", "commitment": "confirmed"]
+            ]
+        ]
+
+        var request = URLRequest(url: rpcEndpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse {
+            guard (200...299).contains(httpResponse.statusCode) else {
+                throw FaucetError.httpError(statusCode: httpResponse.statusCode)
+            }
+        }
+
+        let rpcResponse = try JSONDecoder().decode(AccountInfoResponse.self, from: data)
+
+        if let error = rpcResponse.error {
+            throw FaucetError.rpcError(code: error.code, message: error.message)
+        }
+
+        guard let accountInfo = rpcResponse.result?.value,
+              let accountData = accountInfo.data.first,
+              let decodedData = Data(base64Encoded: accountData) else {
+            throw FaucetError.rpcError(code: -1, message: "Account not found or invalid data")
+        }
+
+        // Parse nonce account data
+        // Nonce account layout (80 bytes):
+        // - 4 bytes: version (u32)
+        // - 4 bytes: state (u32) - 0 = uninitialized, 1 = initialized
+        // - 32 bytes: authority pubkey
+        // - 32 bytes: nonce (blockhash)
+        // - 8 bytes: lamports per signature (fee calculator, deprecated)
+
+        guard decodedData.count >= 80 else {
+            throw FaucetError.rpcError(code: -1, message: "Invalid nonce account data size")
+        }
+
+        // Check state is initialized (bytes 4-7)
+        let state = decodedData.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self) }
+        guard state == 1 else {
+            throw FaucetError.rpcError(code: -1, message: "Nonce account not initialized")
+        }
+
+        // Extract authority (bytes 8-40)
+        let authorityData = decodedData.subdata(in: 8..<40)
+        let authority = authorityData.base58EncodedString
+
+        // Extract nonce value (bytes 40-72)
+        let nonceData = decodedData.subdata(in: 40..<72)
+        let nonce = nonceData.base58EncodedString
+
+        return NonceAccountData(
+            authority: authority,
+            nonce: nonce,
+            lamportsPerSignature: 5000  // Standard fee
+        )
+    }
+
     /// Wait for a transaction to be confirmed
     /// - Parameters:
     ///   - signature: Transaction signature to wait for
@@ -194,14 +266,14 @@ public actor DevnetFaucet {
                let unwrappedStatus = status {
                 // Check for transaction execution error FIRST
                 if unwrappedStatus.err != nil {
-                    print("[RPC] Transaction \(signature.prefix(20))... FAILED with error")
+                    DebugLogger.log("[RPC] Transaction \(signature.prefix(20))... FAILED with error")
                     throw FaucetError.transactionFailed("Transaction failed on-chain (signature verified but execution failed)")
                 }
 
                 // Then check confirmation status
                 if let confirmationStatus = unwrappedStatus.confirmationStatus,
                    confirmationStatus == "confirmed" || confirmationStatus == "finalized" {
-                    print("[RPC] Transaction \(signature.prefix(20))... confirmed successfully")
+                    DebugLogger.log("[RPC] Transaction \(signature.prefix(20))... confirmed successfully")
                     return
                 }
             }
@@ -290,6 +362,47 @@ struct AnyCodable: Decodable {
     init(from decoder: Decoder) throws {
         // Just consume the value, we don't need to store it
         _ = try? decoder.singleValueContainer()
+    }
+}
+
+// MARK: - Nonce Account Types
+
+/// Response for getAccountInfo RPC method
+struct AccountInfoResponse: Decodable {
+    let jsonrpc: String
+    let id: Int
+    let result: AccountInfoResult?
+    let error: RPCError?
+}
+
+struct AccountInfoResult: Decodable {
+    let context: RPCContext?
+    let value: AccountInfoValue?
+}
+
+struct AccountInfoValue: Decodable {
+    let data: [String]  // [base64_data, encoding]
+    let executable: Bool
+    let lamports: UInt64
+    let owner: String
+    let rentEpoch: UInt64?
+}
+
+/// Parsed nonce account data
+public struct NonceAccountData: Sendable {
+    /// Authority pubkey (can advance the nonce)
+    public let authority: String
+
+    /// Current nonce value (used as blockhash for durable transactions)
+    public let nonce: String
+
+    /// Fee per signature in lamports
+    public let lamportsPerSignature: UInt64
+
+    public init(authority: String, nonce: String, lamportsPerSignature: UInt64) {
+        self.authority = authority
+        self.nonce = nonce
+        self.lamportsPerSignature = lamportsPerSignature
     }
 }
 

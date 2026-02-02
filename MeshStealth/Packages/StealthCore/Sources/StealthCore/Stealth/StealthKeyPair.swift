@@ -246,7 +246,7 @@ public struct StealthKeyPair: Codable, Equatable {
 
         // Combine: S = SHA256(S_classical || S_kyber)
         let combined = classicalSecret + kyberSecret
-        return SodiumWrapper.sha256(combined)
+        return try SodiumWrapper.sha256(combined)
     }
 
     /// Derive stealth spending key from shared secret hash

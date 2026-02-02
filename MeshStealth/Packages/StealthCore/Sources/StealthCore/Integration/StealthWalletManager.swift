@@ -220,6 +220,18 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
     /// Whether this payment is part of a split (for mixing)
     public let isSplitPart: Bool
 
+    // MARK: - Pre-Signed Transaction Support (v2 protocol)
+
+    /// Pre-signed transaction (base64) that receiver can broadcast
+    /// Allows "receiver settles" flow without waiting for sender
+    public let preSignedTransaction: String?
+
+    /// Nonce account address used for pre-signed transaction
+    public let nonceAccountAddress: String?
+
+    /// Who settled this payment
+    public var settledBy: SettledBy?
+
     public init(
         id: UUID = UUID(),
         stealthAddress: String,
@@ -240,7 +252,10 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         originalPaymentId: UUID? = nil,
         parentPaymentId: UUID? = nil,
         splitGroupId: UUID? = nil,
-        isSplitPart: Bool = false
+        isSplitPart: Bool = false,
+        preSignedTransaction: String? = nil,
+        nonceAccountAddress: String? = nil,
+        settledBy: SettledBy? = nil
     ) {
         self.id = id
         self.stealthAddress = stealthAddress
@@ -262,6 +277,9 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         self.parentPaymentId = parentPaymentId
         self.splitGroupId = splitGroupId
         self.isSplitPart = isSplitPart
+        self.preSignedTransaction = preSignedTransaction
+        self.nonceAccountAddress = nonceAccountAddress
+        self.settledBy = settledBy
     }
 
     /// Create from mesh payload
@@ -286,6 +304,15 @@ public struct PendingPayment: Codable, Sendable, Identifiable {
         self.parentPaymentId = nil
         self.splitGroupId = nil
         self.isSplitPart = false
+        // v2 protocol: store pre-signed transaction for receiver settlement
+        self.preSignedTransaction = payload.preSignedTransaction
+        self.nonceAccountAddress = payload.nonceAccountAddress
+        self.settledBy = nil
+    }
+
+    /// Whether this payment supports receiver settlement (has pre-signed tx)
+    public var supportsReceiverSettlement: Bool {
+        preSignedTransaction != nil
     }
 
     /// Whether this payment is hybrid (post-quantum)
@@ -436,6 +463,14 @@ public class StealthWalletManager: ObservableObject {
     public var walletMnemonic: [String]? {
         get async {
             await mainWallet?.mnemonic
+        }
+    }
+
+    /// Get the main wallet's secret key for privacy protocol integration
+    /// This is needed for Privacy Cash and ShadowWire to sign transactions
+    public var mainWalletSecretKey: Data? {
+        get async {
+            await mainWallet?.secretKeyData
         }
     }
 
@@ -599,13 +634,13 @@ public class StealthWalletManager: ObservableObject {
 
     /// Derive spending key for a payment we received
     public func deriveSpendingKey(for payment: PendingPayment) throws -> Data {
-        print("[DERIVE-KEY] Deriving spending key for payment \(payment.id)")
-        print("[DERIVE-KEY] Stealth address: \(payment.stealthAddress)")
-        print("[DERIVE-KEY] Ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
-        print("[DERIVE-KEY] Is hybrid: \(payment.isHybrid)")
+        DebugLogger.log("Deriving spending key for payment \(payment.id)", category: "DERIVE-KEY")
+        DebugLogger.log("Stealth address: \(payment.stealthAddress)", category: "DERIVE-KEY")
+        DebugLogger.log("Ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)", category: "DERIVE-KEY")
+        DebugLogger.log("Is hybrid: \(payment.isHybrid)", category: "DERIVE-KEY")
 
         guard let keyPair = keyPair else {
-            print("[DERIVE-KEY] ERROR: keyPair is nil")
+            DebugLogger.error("keyPair is nil", category: "DERIVE-KEY")
             throw WalletError.notInitialized
         }
 
@@ -613,28 +648,28 @@ public class StealthWalletManager: ObservableObject {
 
         if let ciphertext = payment.mlkemCiphertext {
             // Hybrid derivation
-            print("[DERIVE-KEY] Using hybrid derivation (MLKEM ciphertext present, \(ciphertext.count) bytes)")
+            DebugLogger.log("Using hybrid derivation (MLKEM ciphertext present, \(ciphertext.count) bytes)", category: "DERIVE-KEY")
             guard let result = try scanner.scanHybridTransaction(
                 stealthAddress: payment.stealthAddress,
                 ephemeralPublicKey: payment.ephemeralPublicKey,
                 mlkemCiphertext: ciphertext
             ) else {
-                print("[DERIVE-KEY] ERROR: Hybrid scan returned nil - stealth address doesn't match our keys")
+                DebugLogger.error("Hybrid scan returned nil - stealth address doesn't match our keys", category: "DERIVE-KEY")
                 throw WalletError.keyDerivationFailed
             }
-            print("[DERIVE-KEY] Hybrid derivation successful")
+            DebugLogger.log("Hybrid derivation successful", category: "DERIVE-KEY")
             return result.spendingPrivateKey
         } else {
             // Classical derivation
-            print("[DERIVE-KEY] Using classical derivation")
+            DebugLogger.log("Using classical derivation", category: "DERIVE-KEY")
             guard let result = try scanner.scanTransaction(
                 stealthAddress: payment.stealthAddress,
                 ephemeralPublicKey: payment.ephemeralPublicKey
             ) else {
-                print("[DERIVE-KEY] ERROR: Classical scan returned nil - stealth address doesn't match our keys")
+                DebugLogger.error("Classical scan returned nil - stealth address doesn't match our keys", category: "DERIVE-KEY")
                 throw WalletError.keyDerivationFailed
             }
-            print("[DERIVE-KEY] Classical derivation successful")
+            DebugLogger.log("Classical derivation successful", category: "DERIVE-KEY")
             return result.spendingPrivateKey
         }
     }
@@ -681,7 +716,7 @@ public class StealthWalletManager: ObservableObject {
             return balance
         } catch {
             // Log error but don't throw - balance refresh is best-effort
-            print("Failed to refresh balance: \(error)")
+            DebugLogger.error("Failed to refresh balance", error: error, category: "WALLET")
             return mainWalletBalance
         }
     }
@@ -832,16 +867,23 @@ public class StealthWalletManager: ObservableObject {
             return
         }
 
-        outgoingPaymentIntents[index].status = status
-        outgoingPaymentIntents[index].attempts += 1
-
-        if let sig = signature {
-            outgoingPaymentIntents[index].transactionSignature = sig
-        }
-
-        if let err = error {
-            outgoingPaymentIntents[index].errorMessage = err
-        }
+        // Create a new OutgoingPaymentIntent with updated values to trigger @Published
+        // (In-place modification of struct properties doesn't notify SwiftUI)
+        let current = outgoingPaymentIntents[index]
+        outgoingPaymentIntents[index] = OutgoingPaymentIntent(
+            id: current.id,
+            recipientMetaAddress: current.recipientMetaAddress,
+            stealthAddress: current.stealthAddress,
+            ephemeralPublicKey: current.ephemeralPublicKey,
+            mlkemCiphertext: current.mlkemCiphertext,
+            amount: current.amount,
+            memo: current.memo,
+            createdAt: current.createdAt,
+            status: status,
+            transactionSignature: signature ?? current.transactionSignature,
+            errorMessage: error ?? current.errorMessage,
+            attempts: current.attempts + 1
+        )
 
         saveOutgoingIntents()
 
@@ -887,17 +929,23 @@ public class StealthWalletManager: ObservableObject {
             return
         }
 
-        activityItems[index].status = status
-
-        if let sig = signature {
-            activityItems[index].transactionSignature = sig
-        }
-
-        if let err = error {
-            activityItems[index].errorMessage = err
-        }
-
-        activityItems[index].nextRetryAt = nextRetryAt
+        // Create a new ActivityItem with updated values to trigger @Published
+        // (In-place modification of struct properties doesn't notify SwiftUI)
+        let current = activityItems[index]
+        activityItems[index] = ActivityItem(
+            id: current.id,
+            type: current.type,
+            amount: current.amount,
+            timestamp: current.timestamp,
+            status: status,
+            stealthAddress: current.stealthAddress,
+            transactionSignature: signature ?? current.transactionSignature,
+            hopCount: current.hopCount,
+            errorMessage: error ?? current.errorMessage,
+            peerName: current.peerName,
+            parentActivityId: current.parentActivityId,
+            nextRetryAt: nextRetryAt
+        )
 
         saveActivityItems()
     }
@@ -1001,9 +1049,32 @@ public class StealthWalletManager: ObservableObject {
     // MARK: - Shield Operations
 
     private var shieldService: ShieldService?
+    private var _privacyRoutingService: PrivacyRoutingService?
+
+    /// Set the privacy routing service for privacy-enhanced shield/unshield operations
+    /// When set, unshield operations will route through the privacy pool
+    public func setPrivacyRoutingService(_ service: PrivacyRoutingService?) {
+        _privacyRoutingService = service
+        // Update existing shield service if any
+        Task {
+            await shieldService?.setPrivacyRoutingService(service)
+        }
+    }
+
+    /// Lazily create or return the shield service with privacy routing configured
+    private func getOrCreateShieldService() async -> ShieldService {
+        if let existing = shieldService {
+            return existing
+        }
+        let service = ShieldService(rpcClient: faucet)
+        await service.setPrivacyRoutingService(_privacyRoutingService)
+        shieldService = service
+        return service
+    }
 
     /// Shield funds from main wallet to a stealth address (self-deposit)
     /// Automatically performs split/hop/recombine mixing after the initial shield for privacy
+    /// When privacy routing is enabled, routes through privacy pool: main → pool → stealth
     /// - Parameter lamports: Amount to shield in lamports
     /// - Returns: ShieldResult with transaction details
     public func shield(lamports: UInt64) async throws -> ShieldResult {
@@ -1011,18 +1082,36 @@ public class StealthWalletManager: ObservableObject {
             throw WalletError.notInitialized
         }
 
-        if shieldService == nil {
-            shieldService = ShieldService(rpcClient: faucet)
-        }
+        let shieldSvc = await getOrCreateShieldService()
 
-        // Step 1: Initial shield (main → first stealth address)
-        print("[SHIELD] Starting shield of \(lamports) lamports")
-        let result = try await shieldService!.shield(
-            lamports: lamports,
-            mainWallet: mainWallet,
-            stealthKeyPair: keyPair
-        )
-        print("[SHIELD] Initial shield complete: \(result.stealthAddress)")
+        // Step 1: Initial shield
+        // If privacy routing is enabled, use pool routing: main → pool → stealth
+        // Otherwise, direct transfer: main → stealth
+        DebugLogger.log("Starting shield of \(lamports) lamports", category: "SHIELD")
+
+        let result: ShieldResult
+        if let privacyService = _privacyRoutingService,
+           await privacyService.shouldUsePrivacyRouting(for: lamports) {
+            DebugLogger.log("Using privacy pool routing via \(await privacyService.selectedProtocol.displayName)", category: "SHIELD")
+            DebugLogger.log("This will: main → pool → stealth (breaking on-chain link)", category: "SHIELD")
+            result = try await shieldSvc.shieldWithPrivacy(
+                lamports: lamports,
+                mainWallet: mainWallet,
+                stealthKeyPair: keyPair
+            )
+        } else {
+            if _privacyRoutingService != nil {
+                DebugLogger.log("Privacy routing available but not enabled for this amount", category: "SHIELD")
+            } else {
+                DebugLogger.log("No privacy routing configured, using direct transfer", category: "SHIELD")
+            }
+            result = try await shieldSvc.shield(
+                lamports: lamports,
+                mainWallet: mainWallet,
+                stealthKeyPair: keyPair
+            )
+        }
+        DebugLogger.log("Initial shield complete: \(result.stealthAddress)", category: "SHIELD")
 
         // Step 2: Create initial payment record
         let initialPayment = PendingPayment(
@@ -1046,19 +1135,19 @@ public class StealthWalletManager: ObservableObject {
 
         if initialPayment.amount >= minForSplitMix {
             // Use proper split/hop/recombine mixing
-            print("[SHIELD] Starting split/hop/recombine mixing")
+            DebugLogger.log("Starting split/hop/recombine mixing", category: "SHIELD")
             do {
                 let finalPayment = try await mixAfterShield(
                     payment: initialPayment,
                     parentActivityId: shieldActivityId
                 )
-                print("[SHIELD] Mix complete. Final payment at: \(finalPayment.stealthAddress)")
+                DebugLogger.log("Mix complete. Final payment at: \(finalPayment.stealthAddress)", category: "SHIELD")
             } catch {
-                print("[SHIELD] Mix failed: \(error), keeping initial payment")
+                DebugLogger.error("Mix failed, keeping initial payment", error: error, category: "SHIELD")
             }
         } else {
             // For small amounts, do simple hops (1-3)
-            print("[SHIELD] Amount too small for split mixing, using simple hops")
+            DebugLogger.log("Amount too small for split mixing, using simple hops", category: "SHIELD")
             var currentPayment = initialPayment
             let hopCount = Int.random(in: 1...3)
 
@@ -1079,11 +1168,11 @@ public class StealthWalletManager: ObservableObject {
                     }
                     currentPayment = newPayment
                 } catch {
-                    print("[SHIELD] Hop \(i + 1) failed: \(error), stopping")
+                    DebugLogger.error("Hop \(i + 1) failed, stopping", error: error, category: "SHIELD")
                     break
                 }
             }
-            print("[SHIELD] Simple mix complete. Final payment at: \(currentPayment.stealthAddress)")
+            DebugLogger.log("Simple mix complete. Final payment at: \(currentPayment.stealthAddress)", category: "SHIELD")
         }
 
         // Refresh balance after mixing complete
@@ -1099,11 +1188,11 @@ public class StealthWalletManager: ObservableObject {
     ///   - parentActivityId: Parent activity ID for grouping
     /// - Returns: Final payment after mixing
     private func mixAfterShield(payment: PendingPayment, parentActivityId: UUID) async throws -> PendingPayment {
-        print("[SHIELD-MIX] Starting split/hop/recombine for shielded payment")
+        DebugLogger.log("Starting split/hop/recombine for shielded payment", category: "SHIELD-MIX")
 
         // Phase 1: SPLIT into 2-4 random parts
         let numParts = Int.random(in: 2...4)
-        print("[SHIELD-MIX] Phase 1: Splitting into \(numParts) parts")
+        DebugLogger.log("Phase 1: Splitting into \(numParts) parts", category: "SHIELD-MIX")
 
         let splitPayments = try await splitPayment(
             payment: payment,
@@ -1111,16 +1200,16 @@ public class StealthWalletManager: ObservableObject {
             parentActivityId: parentActivityId
         )
 
-        print("[SHIELD-MIX] Split complete: \(splitPayments.count) parts")
+        DebugLogger.log("Split complete: \(splitPayments.count) parts", category: "SHIELD-MIX")
         for (idx, p) in splitPayments.enumerated() {
-            print("[SHIELD-MIX]   Part \(idx + 1): \(p.amount) lamports")
+            DebugLogger.log("  Part \(idx + 1): \(p.amount) lamports", category: "SHIELD-MIX")
         }
 
         // Brief pause after split
         try? await Task.sleep(nanoseconds: 1_000_000_000)
 
         // Phase 2: HOP each split independently (1-3 hops each)
-        print("[SHIELD-MIX] Phase 2: Hopping each split")
+        DebugLogger.log("Phase 2: Hopping each split", category: "SHIELD-MIX")
         var hoppedPayments: [PendingPayment] = []
 
         for (idx, splitPayment) in splitPayments.enumerated() {
@@ -1144,7 +1233,7 @@ public class StealthWalletManager: ObservableObject {
                     }
                     currentPayment = newPayment
                 } catch {
-                    print("[SHIELD-MIX] Hop failed for split \(idx + 1): \(error)")
+                    DebugLogger.error("Hop failed for split \(idx + 1)", error: error, category: "SHIELD-MIX")
                     break
                 }
             }
@@ -1156,19 +1245,19 @@ public class StealthWalletManager: ObservableObject {
             }
         }
 
-        print("[SHIELD-MIX] Hopping complete. \(hoppedPayments.count) payments ready for recombine")
+        DebugLogger.log("Hopping complete. \(hoppedPayments.count) payments ready for recombine", category: "SHIELD-MIX")
 
         // Phase 3: RECOMBINE all splits into a single address
-        print("[SHIELD-MIX] Phase 3: Recombining")
+        DebugLogger.log("Phase 3: Recombining", category: "SHIELD-MIX")
 
         let finalPayment = try await recombinePayments(
             hoppedPayments,
             parentActivityId: parentActivityId
         )
 
-        print("[SHIELD-MIX] Recombine complete!")
-        print("[SHIELD-MIX] Final address: \(finalPayment.stealthAddress)")
-        print("[SHIELD-MIX] Final amount: \(finalPayment.amount) lamports")
+        DebugLogger.log("Recombine complete!", category: "SHIELD-MIX")
+        DebugLogger.log("Final address: \(finalPayment.stealthAddress)", category: "SHIELD-MIX")
+        DebugLogger.log("Final amount: \(finalPayment.amount) lamports", category: "SHIELD-MIX")
 
         return finalPayment
     }
@@ -1187,43 +1276,41 @@ public class StealthWalletManager: ObservableObject {
     ///   - lamports: Amount to unshield (nil = all available)
     /// - Returns: UnshieldResult with transaction details
     public func unshield(payment: PendingPayment, lamports: UInt64? = nil, skipActivityRecord: Bool = false) async throws -> UnshieldResult {
-        print("[WM-UNSHIELD] Starting unshield for payment \(payment.id)")
-        print("[WM-UNSHIELD] Stealth address: \(payment.stealthAddress)")
-        print("[WM-UNSHIELD] Ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
-        print("[WM-UNSHIELD] Is hybrid: \(payment.isHybrid)")
-        print("[WM-UNSHIELD] Hop count: \(payment.hopCount)")
+        DebugLogger.log("Starting unshield for payment \(payment.id)", category: "WM-UNSHIELD")
+        DebugLogger.log("Stealth address: \(payment.stealthAddress)", category: "WM-UNSHIELD")
+        DebugLogger.log("Ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)", category: "WM-UNSHIELD")
+        DebugLogger.log("Is hybrid: \(payment.isHybrid)", category: "WM-UNSHIELD")
+        DebugLogger.log("Hop count: \(payment.hopCount)", category: "WM-UNSHIELD")
 
         guard let mainWallet = mainWallet, let _ = keyPair else {
-            print("[WM-UNSHIELD] ERROR: Wallet not initialized")
+            DebugLogger.error("Wallet not initialized", category: "WM-UNSHIELD")
             throw WalletError.notInitialized
         }
 
         // Derive spending key for this payment
-        print("[WM-UNSHIELD] Deriving spending key...")
+        DebugLogger.log("Deriving spending key...", category: "WM-UNSHIELD")
         let spendingKey: Data
         do {
             spendingKey = try deriveSpendingKey(for: payment)
-            print("[WM-UNSHIELD] Spending key derived successfully")
+            DebugLogger.log("Spending key derived successfully", category: "WM-UNSHIELD")
         } catch {
-            print("[WM-UNSHIELD] ERROR: Failed to derive spending key: \(error)")
+            DebugLogger.error("Failed to derive spending key", error: error, category: "WM-UNSHIELD")
             throw error
         }
 
-        if shieldService == nil {
-            shieldService = ShieldService(rpcClient: faucet)
-        }
+        let shieldSvc = await getOrCreateShieldService()
 
         let mainAddress = await mainWallet.address
-        print("[WM-UNSHIELD] Main wallet address: \(mainAddress)")
+        DebugLogger.log("Main wallet address: \(mainAddress)", category: "WM-UNSHIELD")
 
-        let result = try await shieldService!.unshield(
+        let result = try await shieldSvc.unshield(
             payment: payment,
             mainWalletAddress: mainAddress,
             spendingKey: spendingKey,
             lamports: lamports
         )
 
-        print("[WM-UNSHIELD] Unshield transaction completed: \(result.signature)")
+        DebugLogger.log("Unshield transaction completed: \(result.signature)", category: "WM-UNSHIELD")
 
         // Record unshield activity (unless already recorded by caller)
         if !skipActivityRecord {
@@ -1268,7 +1355,7 @@ public class StealthWalletManager: ObservableObject {
                 results.append(result)
             } catch {
                 // Log error but continue with other payments
-                print("Failed to unshield payment \(payment.id): \(error)")
+                DebugLogger.error("Failed to unshield payment \(payment.id)", error: error, category: "WM-UNSHIELD")
             }
         }
 
@@ -1285,37 +1372,35 @@ public class StealthWalletManager: ObservableObject {
     ///   - parentActivityId: Optional parent activity ID to link this hop to (for shield/unshield grouping)
     /// - Returns: HopResult with the new stealth address and transaction details
     public func hop(payment: PendingPayment, lamports: UInt64? = nil, parentActivityId: UUID? = nil) async throws -> HopResult {
-        print("[WM-HOP] Starting hop for payment \(payment.id)")
-        print("[WM-HOP] Source stealth address: \(payment.stealthAddress)")
-        print("[WM-HOP] Source ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)")
-        print("[WM-HOP] Source is hybrid: \(payment.isHybrid)")
+        DebugLogger.log("Starting hop for payment \(payment.id)", category: "WM-HOP")
+        DebugLogger.log("Source stealth address: \(payment.stealthAddress)", category: "WM-HOP")
+        DebugLogger.log("Source ephemeral key: \(payment.ephemeralPublicKey.base58EncodedString)", category: "WM-HOP")
+        DebugLogger.log("Source is hybrid: \(payment.isHybrid)", category: "WM-HOP")
 
         guard let keyPair = keyPair else {
-            print("[WM-HOP] ERROR: Wallet not initialized")
+            DebugLogger.error("Wallet not initialized", category: "WM-HOP")
             throw WalletError.notInitialized
         }
 
         // Derive spending key for this payment
-        print("[WM-HOP] Deriving spending key for source payment...")
+        DebugLogger.log("Deriving spending key for source payment...", category: "WM-HOP")
         let spendingKey = try deriveSpendingKey(for: payment)
-        print("[WM-HOP] Spending key derived successfully")
+        DebugLogger.log("Spending key derived successfully", category: "WM-HOP")
 
-        if shieldService == nil {
-            shieldService = ShieldService(rpcClient: faucet)
-        }
+        let shieldSvc = await getOrCreateShieldService()
 
-        let result = try await shieldService!.hop(
+        let result = try await shieldSvc.hop(
             payment: payment,
             stealthKeyPair: keyPair,
             spendingKey: spendingKey,
             lamports: lamports
         )
 
-        print("[WM-HOP] Hop transaction completed")
-        print("[WM-HOP] New stealth address: \(result.destinationStealthAddress)")
-        print("[WM-HOP] New ephemeral key: \(result.ephemeralPublicKey.base58EncodedString)")
-        print("[WM-HOP] New amount: \(result.amount) lamports")
-        print("[WM-HOP] Signature: \(result.signature)")
+        DebugLogger.log("Hop transaction completed", category: "WM-HOP")
+        DebugLogger.log("New stealth address: \(result.destinationStealthAddress)", category: "WM-HOP")
+        DebugLogger.log("New ephemeral key: \(result.ephemeralPublicKey.base58EncodedString)", category: "WM-HOP")
+        DebugLogger.log("New amount: \(result.amount) lamports", category: "WM-HOP")
+        DebugLogger.log("Signature: \(result.signature)", category: "WM-HOP")
 
         // Remove source payment from pending
         pendingPayments.removeAll { $0.id == payment.id }
@@ -1335,11 +1420,11 @@ public class StealthWalletManager: ObservableObject {
             parentPaymentId: payment.id
         )
 
-        print("[WM-HOP] Created new payment:")
-        print("[WM-HOP]   ID: \(newPayment.id)")
-        print("[WM-HOP]   Address: \(newPayment.stealthAddress)")
-        print("[WM-HOP]   Ephemeral: \(newPayment.ephemeralPublicKey.base58EncodedString)")
-        print("[WM-HOP]   Is hybrid: \(newPayment.isHybrid)")
+        DebugLogger.log("Created new payment:", category: "WM-HOP")
+        DebugLogger.log("  ID: \(newPayment.id)", category: "WM-HOP")
+        DebugLogger.log("  Address: \(newPayment.stealthAddress)", category: "WM-HOP")
+        DebugLogger.log("  Ephemeral: \(newPayment.ephemeralPublicKey.base58EncodedString)", category: "WM-HOP")
+        DebugLogger.log("  Is hybrid: \(newPayment.isHybrid)", category: "WM-HOP")
 
         addPendingPayment(newPayment)
 
@@ -1355,7 +1440,7 @@ public class StealthWalletManager: ObservableObject {
             parentActivityId: parentActivityId
         )
 
-        print("[WM-HOP] Hop complete. pendingPayments count: \(pendingPayments.count)")
+        DebugLogger.log("Hop complete. pendingPayments count: \(pendingPayments.count)", category: "WM-HOP")
 
         return result
     }
@@ -1389,9 +1474,9 @@ public class StealthWalletManager: ObservableObject {
         parts: Int? = nil,
         parentActivityId: UUID? = nil
     ) async throws -> [PendingPayment] {
-        print("[SPLIT] ======== splitPayment starting ========")
-        print("[SPLIT] Source payment ID: \(payment.id)")
-        print("[SPLIT] Source amount: \(payment.amount) lamports")
+        DebugLogger.log("======== splitPayment starting ========", category: "SPLIT")
+        DebugLogger.log("Source payment ID: \(payment.id)", category: "SPLIT")
+        DebugLogger.log("Source amount: \(payment.amount) lamports", category: "SPLIT")
 
         guard let keyPair = keyPair else {
             throw WalletError.notInitialized
@@ -1399,12 +1484,12 @@ public class StealthWalletManager: ObservableObject {
 
         // Determine number of splits (2-4 if not specified)
         let numParts = parts ?? Int.random(in: 2...4)
-        print("[SPLIT] Splitting into \(numParts) parts")
+        DebugLogger.log("Splitting into \(numParts) parts", category: "SPLIT")
 
         // Calculate available amount after accounting for transaction fees
         let totalFees = UInt64(numParts) * feePerTransaction
         guard payment.amount > totalFees + (UInt64(numParts) * minSplitAmount) else {
-            print("[SPLIT] ERROR: Insufficient balance for \(numParts) splits")
+            DebugLogger.error("Insufficient balance for \(numParts) splits", category: "SPLIT")
             throw WalletError.insufficientBalance
         }
 
@@ -1412,14 +1497,12 @@ public class StealthWalletManager: ObservableObject {
 
         // Generate random split amounts
         let splitAmounts = generateRandomSplits(totalAmount: availableAmount, parts: numParts)
-        print("[SPLIT] Split amounts: \(splitAmounts.map { "\($0) lamports" })")
+        DebugLogger.log("Split amounts: \(splitAmounts.map { "\($0) lamports" })", category: "SPLIT")
 
         // Derive spending key for the source payment
         let spendingKey = try deriveSpendingKey(for: payment)
 
-        if shieldService == nil {
-            shieldService = ShieldService(rpcClient: faucet)
-        }
+        let shieldSvc = await getOrCreateShieldService()
 
         // Create a group ID to link all splits together
         let splitGroupId = UUID()
@@ -1428,7 +1511,7 @@ public class StealthWalletManager: ObservableObject {
         // Execute splits sequentially (could optimize to parallel later)
         for (index, amount) in splitAmounts.enumerated() {
             let isLastSplit = (index == splitAmounts.count - 1)
-            print("[SPLIT] Creating split \(index + 1) of \(numParts): \(amount) lamports\(isLastSplit ? " (closing account)" : "")")
+            DebugLogger.log("Creating split \(index + 1) of \(numParts): \(amount) lamports\(isLastSplit ? " (closing account)" : "")", category: "SPLIT")
 
             // Generate new stealth address for this split (use hybrid meta-address)
             let metaAddress = keyPair.hybridMetaAddressString
@@ -1439,14 +1522,14 @@ public class StealthWalletManager: ObservableObject {
             // Send funds to the new stealth address
             // On last split, send ALL remaining balance (nil) to close the source account
             // This avoids Solana rent issues where leftover lamports are below rent-exempt threshold
-            let signature = try await shieldService!.sendFromStealth(
+            let signature = try await shieldSvc.sendFromStealth(
                 fromStealthAddress: payment.stealthAddress,
                 spendingKey: spendingKey,
                 toAddress: stealthResult.stealthAddress,
                 lamports: isLastSplit ? nil : amount
             )
 
-            print("[SPLIT] Split \(index + 1) transaction: \(signature)")
+            DebugLogger.log("Split \(index + 1) transaction: \(signature)", category: "SPLIT")
 
             // Create new pending payment for this split
             let newPayment = PendingPayment(
@@ -1488,8 +1571,8 @@ public class StealthWalletManager: ObservableObject {
         savePendingPayments()
         updatePendingBalance()
 
-        print("[SPLIT] ======== splitPayment complete ========")
-        print("[SPLIT] Created \(newPayments.count) split payments")
+        DebugLogger.log("======== splitPayment complete ========", category: "SPLIT")
+        DebugLogger.log("Created \(newPayments.count) split payments", category: "SPLIT")
         return newPayments
     }
 
@@ -1541,8 +1624,8 @@ public class StealthWalletManager: ObservableObject {
         _ payments: [PendingPayment],
         parentActivityId: UUID? = nil
     ) async throws -> PendingPayment {
-        print("[RECOMBINE] ======== recombinePayments starting ========")
-        print("[RECOMBINE] Combining \(payments.count) payments")
+        DebugLogger.log("======== recombinePayments starting ========", category: "RECOMBINE")
+        DebugLogger.log("Combining \(payments.count) payments", category: "RECOMBINE")
 
         guard !payments.isEmpty else {
             throw WalletError.paymentNotFound
@@ -1552,9 +1635,7 @@ public class StealthWalletManager: ObservableObject {
             throw WalletError.notInitialized
         }
 
-        if shieldService == nil {
-            shieldService = ShieldService(rpcClient: faucet)
-        }
+        let shieldSvc = await getOrCreateShieldService()
 
         // Generate a single new stealth address for the combined funds (use hybrid meta-address)
         let metaAddress = keyPair.hybridMetaAddressString
@@ -1562,16 +1643,16 @@ public class StealthWalletManager: ObservableObject {
             metaAddressString: metaAddress
         )
 
-        print("[RECOMBINE] Final destination: \(finalResult.stealthAddress)")
+        DebugLogger.log("Final destination: \(finalResult.stealthAddress)", category: "RECOMBINE")
 
         var totalAmount: UInt64 = 0
         var signatures: [String] = []
 
         // Send each payment to the combined address
         for (index, payment) in payments.enumerated() {
-            print("[RECOMBINE] Processing payment \(index + 1) of \(payments.count) (closing account)")
-            print("[RECOMBINE]   Source: \(payment.stealthAddress)")
-            print("[RECOMBINE]   Expected amount: \(payment.amount) lamports")
+            DebugLogger.log("Processing payment \(index + 1) of \(payments.count) (closing account)", category: "RECOMBINE")
+            DebugLogger.log("  Source: \(payment.stealthAddress)", category: "RECOMBINE")
+            DebugLogger.log("  Expected amount: \(payment.amount) lamports", category: "RECOMBINE")
 
             // Derive spending key for this payment
             let spendingKey = try deriveSpendingKey(for: payment)
@@ -1584,14 +1665,14 @@ public class StealthWalletManager: ObservableObject {
 
             // Send ALL to the combined address (nil closes the source account)
             // This avoids Solana rent issues and ensures exact balance transfer
-            let signature = try await shieldService!.sendFromStealth(
+            let signature = try await shieldSvc.sendFromStealth(
                 fromStealthAddress: payment.stealthAddress,
                 spendingKey: spendingKey,
                 toAddress: finalResult.stealthAddress,
                 lamports: nil  // Send ALL, closing the account
             )
 
-            print("[RECOMBINE] Transaction \(index + 1): \(signature)")
+            DebugLogger.log("Transaction \(index + 1): \(signature)", category: "RECOMBINE")
             signatures.append(signature)
             totalAmount += estimatedSendAmount
 
@@ -1635,9 +1716,9 @@ public class StealthWalletManager: ObservableObject {
             parentActivityId: parentActivityId
         )
 
-        print("[RECOMBINE] ======== recombinePayments complete ========")
-        print("[RECOMBINE] Combined payment: \(combinedPayment.stealthAddress)")
-        print("[RECOMBINE] Total amount: \(totalAmount) lamports")
+        DebugLogger.log("======== recombinePayments complete ========", category: "RECOMBINE")
+        DebugLogger.log("Combined payment: \(combinedPayment.stealthAddress)", category: "RECOMBINE")
+        DebugLogger.log("Total amount: \(totalAmount) lamports", category: "RECOMBINE")
 
         return combinedPayment
     }

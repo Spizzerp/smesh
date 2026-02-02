@@ -148,6 +148,15 @@ struct WalletView: View {
                 isUnshielding: showUnshieldConfirm || walletViewModel.isUnshielding
             )
 
+            // Privacy Protocol Status (show when enabled)
+            if walletViewModel.privacyEnabled {
+                TerminalPrivacyStatusBar(
+                    protocol: walletViewModel.selectedPrivacyProtocol,
+                    isReady: walletViewModel.privacyReady,
+                    poolBalance: walletViewModel.privacyPoolBalance
+                )
+            }
+
             // Stealth Wallet Container (Purple)
             TerminalStealthWalletContainer(
                 balance: walletViewModel.stealthBalance,
@@ -174,12 +183,12 @@ struct WalletView: View {
     }
 
     private func performShield() {
-        print("[UI] performShield called with shieldAmount: '\(shieldAmount)'")
+        DebugLogger.log("[UI] performShield called with shieldAmount: '\(shieldAmount)'")
         guard let amount = Double(shieldAmount), amount > 0 else {
-            print("[UI] performShield: invalid amount, returning early")
+            DebugLogger.log("[UI] performShield: invalid amount, returning early")
             return
         }
-        print("[UI] performShield: starting shield of \(amount) SOL")
+        DebugLogger.log("[UI] performShield: starting shield of \(amount) SOL")
 
         // Capture amount before clearing
         let shieldAmountValue = amount

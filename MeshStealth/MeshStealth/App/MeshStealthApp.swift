@@ -37,6 +37,12 @@ class AppState: ObservableObject {
             networkMonitor: meshNetworkManager.networkMonitor
         )
 
+        // Wire up settlement service bindings for progress updates
+        walletViewModel.setupSettlementBindings(meshNetworkManager.settlementService)
+
+        // Wire up privacy routing service to all components (mesh, settlement, shield service, wallet manager)
+        meshNetworkManager.setPrivacyRoutingService(walletViewModel.privacyRoutingService)
+
         // Start initialization
         Task {
             await initialize()
@@ -88,140 +94,35 @@ struct ContentView: View {
     }
 
     var body: some View {
-        Group {
-            if appState.isInitialized {
-                TabView(selection: $selectedTab) {
-                    WalletView()
-                        .tabItem {
-                            Label("WALLET", systemImage: "square.fill")
-                        }
-                        .tag(0)
-
-                    NearbyPeersView()
-                        .tabItem {
-                            Label("MESH", systemImage: "circle.grid.3x3")
-                        }
-                        .tag(1)
-
-                    ActivityView()
-                        .tabItem {
-                            Label("ACTIVITY", systemImage: "list.bullet")
-                        }
-                        .tag(2)
-
-                    SettingsView()
-                        .tabItem {
-                            Label("CONFIG", systemImage: "slider.horizontal.3")
-                        }
-                        .tag(3)
+        TabView(selection: $selectedTab) {
+            NearbyPeersView()
+                .tabItem {
+                    Label("MESH", systemImage: "circle.grid.3x3")
                 }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    // Spacer to add padding above tab bar
-                    Color.clear.frame(height: 8)
+                .tag(0)
+
+            WalletView()
+                .tabItem {
+                    Label("WALLET", systemImage: "square.fill")
                 }
-                .tint(TerminalPalette.cyan)
-            } else if let error = appState.initializationError {
-                ErrorView(error: error)
-            } else {
-                LoadingView()
-            }
+                .tag(1)
+
+            ActivityView()
+                .tabItem {
+                    Label("ACTIVITY", systemImage: "list.bullet")
+                }
+                .tag(2)
+
+            SettingsView()
+                .tabItem {
+                    Label("CONFIG", systemImage: "slider.horizontal.3")
+                }
+                .tag(3)
         }
-    }
-}
-
-struct LoadingView: View {
-    @State private var spinnerIndex = 0
-    private let spinnerFrames = ["|", "/", "-", "\\"]
-
-    var body: some View {
-        ZStack {
-            TerminalPalette.background
-                .ignoresSafeArea()
-
-            ScanlineOverlay()
-                .ignoresSafeArea()
-
-            VStack(spacing: 24) {
-                // ASCII art logo placeholder
-                Text("[MESH_STEALTH]")
-                    .font(TerminalTypography.balance(24))
-                    .foregroundColor(TerminalPalette.cyan)
-                    .terminalGlow(TerminalPalette.cyan, radius: 4)
-
-                HStack(spacing: 8) {
-                    Text(spinnerFrames[spinnerIndex])
-                        .font(TerminalTypography.body(16))
-                        .foregroundColor(TerminalPalette.cyan)
-
-                    Text("INITIALIZING WALLET")
-                        .font(TerminalTypography.body(14))
-                        .foregroundColor(TerminalPalette.textDim)
-
-                    TerminalLoadingDots(color: TerminalPalette.textDim)
-                }
-
-                Text("// Connecting to Solana network")
-                    .font(TerminalTypography.label())
-                    .foregroundColor(TerminalPalette.textMuted)
-            }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear.frame(height: 8)
         }
-        .onAppear {
-            Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-                spinnerIndex = (spinnerIndex + 1) % spinnerFrames.count
-            }
-        }
-    }
-}
-
-struct ErrorView: View {
-    let error: Error
-
-    var body: some View {
-        ZStack {
-            TerminalPalette.background
-                .ignoresSafeArea()
-
-            ScanlineOverlay()
-                .ignoresSafeArea()
-
-            VStack(spacing: 24) {
-                Text("[ERROR]")
-                    .font(TerminalTypography.balance(24))
-                    .foregroundColor(TerminalPalette.error)
-                    .terminalGlow(TerminalPalette.error, radius: 4)
-
-                VStack(spacing: 12) {
-                    Text("INITIALIZATION FAILED")
-                        .font(TerminalTypography.header())
-                        .foregroundColor(TerminalPalette.error)
-
-                    Text(error.localizedDescription)
-                        .font(TerminalTypography.body(12))
-                        .foregroundColor(TerminalPalette.textDim)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                }
-
-                // Error box
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("> Stack trace:")
-                        .font(TerminalTypography.label())
-                        .foregroundColor(TerminalPalette.textMuted)
-                    Text(String(describing: type(of: error)))
-                        .font(TerminalTypography.label())
-                        .foregroundColor(TerminalPalette.textDim)
-                }
-                .padding(16)
-                .background(
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(TerminalPalette.surface)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 2)
-                                .stroke(Color(hex: "550000"), lineWidth: 1)  // Dark red border
-                        )
-                )
-            }
-        }
+        .tint(TerminalPalette.cyan)
     }
 }
 

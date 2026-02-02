@@ -31,7 +31,10 @@ let package = Package(
                 .product(name: "Sodium", package: "swift-sodium-full"),
                 .product(name: "Base58Swift", package: "Base58Swift"),
             ],
-            path: "Sources/StealthCore"
+            path: "Sources/StealthCore",
+            resources: [
+                .process("Privacy/Resources")
+            ]
         ),
         .testTarget(
             name: "StealthCoreTests",

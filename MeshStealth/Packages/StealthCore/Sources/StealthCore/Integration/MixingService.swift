@@ -224,11 +224,11 @@ public class MixingService: ObservableObject {
     ///   - parentActivityId: Optional parent activity ID for activity grouping
     /// - Returns: The final payment after mixing (to use for unshield)
     public func mixBeforeUnshield(payment: PendingPayment, parentActivityId: UUID? = nil) async throws -> PendingPayment {
-        print("[MIX] ======== mixBeforeUnshield starting (split/hop/recombine) ========")
-        print("[MIX] Payment ID: \(payment.id)")
-        print("[MIX] Initial stealth address: \(payment.stealthAddress)")
-        print("[MIX] Initial amount: \(payment.amount) lamports")
-        print("[MIX] Parent activity ID: \(parentActivityId?.uuidString ?? "none")")
+        DebugLogger.log("[MIX] ======== mixBeforeUnshield starting (split/hop/recombine) ========")
+        DebugLogger.log("[MIX] Payment ID: \(payment.id)")
+        DebugLogger.log("[MIX] Initial stealth address: \(payment.stealthAddress)")
+        DebugLogger.log("[MIX] Initial amount: \(payment.amount) lamports")
+        DebugLogger.log("[MIX] Parent activity ID: \(parentActivityId?.uuidString ?? "none")")
 
         // Minimum amount needed for proper mixing:
         // At least 2 splits with min amount + fees for split, hops, and recombine
@@ -236,16 +236,16 @@ public class MixingService: ObservableObject {
 
         // If amount is too small for proper mixing, fall back to simple hops
         if payment.amount < minForProperMix {
-            print("[MIX] Amount too small for split mixing, using simple hops")
+            DebugLogger.log("[MIX] Amount too small for split mixing, using simple hops")
             return try await simpleHopMix(payment: payment, parentActivityId: parentActivityId)
         }
 
         // Phase 1: SPLIT into 2-4 random parts
-        print("[MIX] ======== Phase 1: SPLIT ========")
+        DebugLogger.log("[MIX] ======== Phase 1: SPLIT ========")
         statusMessage = "Splitting payment..."
 
         let numParts = Int.random(in: 2...4)
-        print("[MIX] Splitting into \(numParts) parts")
+        DebugLogger.log("[MIX] Splitting into \(numParts) parts")
 
         var splitPayments: [PendingPayment]
         do {
@@ -254,12 +254,12 @@ public class MixingService: ObservableObject {
                 parts: numParts,
                 parentActivityId: parentActivityId
             )
-            print("[MIX] Split complete: \(splitPayments.count) parts created")
+            DebugLogger.log("[MIX] Split complete: \(splitPayments.count) parts created")
             for (idx, p) in splitPayments.enumerated() {
-                print("[MIX]   Part \(idx + 1): \(p.amount) lamports at \(p.stealthAddress.prefix(12))...")
+                DebugLogger.log("[MIX]   Part \(idx + 1): \(p.amount) lamports at \(p.stealthAddress.prefix(12))...")
             }
         } catch {
-            print("[MIX] Split failed: \(error), falling back to simple hops")
+            DebugLogger.log("[MIX] Split failed: \(error), falling back to simple hops")
             return try await simpleHopMix(payment: payment, parentActivityId: parentActivityId)
         }
 
@@ -267,19 +267,19 @@ public class MixingService: ObservableObject {
         try? await Task.sleep(nanoseconds: 1_000_000_000)
 
         // Phase 2: HOP each split independently (1-3 hops each)
-        print("[MIX] ======== Phase 2: HOP each split ========")
+        DebugLogger.log("[MIX] ======== Phase 2: HOP each split ========")
         statusMessage = "Hopping splits..."
 
         var hoppedPayments: [PendingPayment] = []
 
         for (idx, splitPayment) in splitPayments.enumerated() {
-            print("[MIX] Processing split \(idx + 1) of \(splitPayments.count)")
+            DebugLogger.log("[MIX] Processing split \(idx + 1) of \(splitPayments.count)")
 
             let hopsForThisSplit = Int.random(in: 1...3)
             var currentPayment = splitPayment
 
             for hopIdx in 0..<hopsForThisSplit {
-                print("[MIX]   Hop \(hopIdx + 1) of \(hopsForThisSplit) for split \(idx + 1)")
+                DebugLogger.log("[MIX]   Hop \(hopIdx + 1) of \(hopsForThisSplit) for split \(idx + 1)")
                 statusMessage = "Hopping split \(idx + 1)/\(splitPayments.count), hop \(hopIdx + 1)/\(hopsForThisSplit)..."
 
                 // Brief delay between hops
@@ -298,20 +298,20 @@ public class MixingService: ObservableObject {
                     guard let newPayment = walletManager.pendingPayments.first(where: {
                         $0.stealthAddress == result.destinationStealthAddress
                     }) else {
-                        print("[MIX]   WARNING: Could not find hopped payment, using current")
+                        DebugLogger.log("[MIX]   WARNING: Could not find hopped payment, using current")
                         break
                     }
 
                     currentPayment = newPayment
-                    print("[MIX]   Hop complete: now at \(currentPayment.stealthAddress.prefix(12))...")
+                    DebugLogger.log("[MIX]   Hop complete: now at \(currentPayment.stealthAddress.prefix(12))...")
                 } catch {
-                    print("[MIX]   Hop \(hopIdx + 1) failed: \(error), stopping hops for this split")
+                    DebugLogger.log("[MIX]   Hop \(hopIdx + 1) failed: \(error), stopping hops for this split")
                     break
                 }
             }
 
             hoppedPayments.append(currentPayment)
-            print("[MIX] Split \(idx + 1) finished with \(currentPayment.hopCount) total hops")
+            DebugLogger.log("[MIX] Split \(idx + 1) finished with \(currentPayment.hopCount) total hops")
 
             // Brief pause between processing splits
             if idx < splitPayments.count - 1 {
@@ -319,10 +319,10 @@ public class MixingService: ObservableObject {
             }
         }
 
-        print("[MIX] All splits hopped. Total hopped payments: \(hoppedPayments.count)")
+        DebugLogger.log("[MIX] All splits hopped. Total hopped payments: \(hoppedPayments.count)")
 
         // Phase 3: RECOMBINE all splits into a single address
-        print("[MIX] ======== Phase 3: RECOMBINE ========")
+        DebugLogger.log("[MIX] ======== Phase 3: RECOMBINE ========")
         statusMessage = "Recombining splits..."
 
         let finalPayment: PendingPayment
@@ -331,33 +331,33 @@ public class MixingService: ObservableObject {
                 hoppedPayments,
                 parentActivityId: parentActivityId
             )
-            print("[MIX] Recombine complete!")
-            print("[MIX] Final address: \(finalPayment.stealthAddress)")
-            print("[MIX] Final amount: \(finalPayment.amount) lamports")
+            DebugLogger.log("[MIX] Recombine complete!")
+            DebugLogger.log("[MIX] Final address: \(finalPayment.stealthAddress)")
+            DebugLogger.log("[MIX] Final amount: \(finalPayment.amount) lamports")
         } catch {
-            print("[MIX] Recombine failed: \(error)")
+            DebugLogger.log("[MIX] Recombine failed: \(error)")
             // If recombine fails, return the first hopped payment (partial success)
             if let firstHopped = hoppedPayments.first {
-                print("[MIX] Returning first hopped payment as fallback")
+                DebugLogger.log("[MIX] Returning first hopped payment as fallback")
                 return firstHopped
             }
             throw error
         }
 
-        print("[MIX] ======== mixBeforeUnshield complete (split/hop/recombine) ========")
-        print("[MIX] Original amount: \(payment.amount) lamports")
-        print("[MIX] Final amount: \(finalPayment.amount) lamports")
-        print("[MIX] Fee overhead: \(payment.amount - finalPayment.amount) lamports")
+        DebugLogger.log("[MIX] ======== mixBeforeUnshield complete (split/hop/recombine) ========")
+        DebugLogger.log("[MIX] Original amount: \(payment.amount) lamports")
+        DebugLogger.log("[MIX] Final amount: \(finalPayment.amount) lamports")
+        DebugLogger.log("[MIX] Fee overhead: \(payment.amount - finalPayment.amount) lamports")
 
         return finalPayment
     }
 
     /// Simple hop-based mixing for small amounts (fallback when split isn't viable)
     private func simpleHopMix(payment: PendingPayment, parentActivityId: UUID? = nil) async throws -> PendingPayment {
-        print("[MIX] Using simple hop mixing")
+        DebugLogger.log("[MIX] Using simple hop mixing")
 
         guard payment.amount > minBalanceForHop else {
-            print("[MIX] ERROR: Insufficient balance for any mixing")
+            DebugLogger.log("[MIX] ERROR: Insufficient balance for any mixing")
             throw MixingError.insufficientBalance
         }
 
@@ -390,10 +390,10 @@ public class MixingService: ObservableObject {
     /// Unshield all payments with automatic pre-mix for privacy
     /// Each payment gets 1-2 hops before being sent to main wallet
     public func unshieldAllWithMix() async -> [UnshieldResult] {
-        print("[UNSHIELD-MIX] ======== Starting unshieldAllWithMix ========")
+        DebugLogger.log("[UNSHIELD-MIX] ======== Starting unshieldAllWithMix ========")
 
         guard !isMixing else {
-            print("[UNSHIELD-MIX] Already mixing, returning empty")
+            DebugLogger.log("[UNSHIELD-MIX] Already mixing, returning empty")
             return []
         }
 
@@ -408,13 +408,13 @@ public class MixingService: ObservableObject {
             $0.status == .received && $0.amount > minBalanceForHop
         }
 
-        print("[UNSHIELD-MIX] Found \(payments.count) eligible payments")
+        DebugLogger.log("[UNSHIELD-MIX] Found \(payments.count) eligible payments")
         for (idx, p) in payments.enumerated() {
-            print("[UNSHIELD-MIX]   [\(idx)] \(p.id): \(p.stealthAddress) - \(p.amount) lamports")
+            DebugLogger.log("[UNSHIELD-MIX]   [\(idx)] \(p.id): \(p.stealthAddress) - \(p.amount) lamports")
         }
 
         guard !payments.isEmpty else {
-            print("[UNSHIELD-MIX] No eligible payments")
+            DebugLogger.log("[UNSHIELD-MIX] No eligible payments")
             return []
         }
 
@@ -427,38 +427,38 @@ public class MixingService: ObservableObject {
             stealthAddress: payments.first?.stealthAddress ?? "",
             signature: "pending"
         )
-        print("[UNSHIELD-MIX] Created parent activity: \(parentActivityId)")
+        DebugLogger.log("[UNSHIELD-MIX] Created parent activity: \(parentActivityId)")
 
         var results: [UnshieldResult] = []
         let totalPayments = payments.count
 
         for (index, payment) in payments.enumerated() {
-            print("[UNSHIELD-MIX] -------- Processing payment \(index + 1) of \(totalPayments) --------")
-            print("[UNSHIELD-MIX] Payment ID: \(payment.id)")
-            print("[UNSHIELD-MIX] Stealth address: \(payment.stealthAddress)")
+            DebugLogger.log("[UNSHIELD-MIX] -------- Processing payment \(index + 1) of \(totalPayments) --------")
+            DebugLogger.log("[UNSHIELD-MIX] Payment ID: \(payment.id)")
+            DebugLogger.log("[UNSHIELD-MIX] Stealth address: \(payment.stealthAddress)")
 
             mixProgress = Double(index) / Double(totalPayments)
             statusMessage = "Mixing & unshielding payment \(index + 1) of \(totalPayments)..."
 
             do {
                 // Mix first (1-5 quick hops) - pass the parent activity ID so hops link to it
-                print("[UNSHIELD-MIX] Starting mix phase...")
+                DebugLogger.log("[UNSHIELD-MIX] Starting mix phase...")
                 let mixedPayment = try await mixBeforeUnshield(payment: payment, parentActivityId: parentActivityId)
 
-                print("[UNSHIELD-MIX] Mix complete. Now unshielding...")
-                print("[UNSHIELD-MIX] Mixed payment ID: \(mixedPayment.id)")
-                print("[UNSHIELD-MIX] Mixed payment address: \(mixedPayment.stealthAddress)")
-                print("[UNSHIELD-MIX] Mixed payment ephemeral: \(mixedPayment.ephemeralPublicKey.base58EncodedString)")
+                DebugLogger.log("[UNSHIELD-MIX] Mix complete. Now unshielding...")
+                DebugLogger.log("[UNSHIELD-MIX] Mixed payment ID: \(mixedPayment.id)")
+                DebugLogger.log("[UNSHIELD-MIX] Mixed payment address: \(mixedPayment.stealthAddress)")
+                DebugLogger.log("[UNSHIELD-MIX] Mixed payment ephemeral: \(mixedPayment.ephemeralPublicKey.base58EncodedString)")
 
                 // Then unshield to main wallet (skip recording, we have the parent)
                 let result = try await walletManager.unshield(payment: mixedPayment, skipActivityRecord: true)
-                print("[UNSHIELD-MIX] Unshield successful! Signature: \(result.signature)")
+                DebugLogger.log("[UNSHIELD-MIX] Unshield successful! Signature: \(result.signature)")
 
                 results.append(result)
             } catch {
                 // Log error but continue with other payments
-                print("[UNSHIELD-MIX] ERROR: Failed to mix+unshield payment \(payment.id): \(error)")
-                print("[UNSHIELD-MIX] Error details: \(error.localizedDescription)")
+                DebugLogger.log("[UNSHIELD-MIX] ERROR: Failed to mix+unshield payment \(payment.id): \(error)")
+                DebugLogger.log("[UNSHIELD-MIX] Error details: \(error.localizedDescription)")
             }
         }
 
@@ -473,8 +473,8 @@ public class MixingService: ObservableObject {
             walletManager.updateActivityAmount(id: parentActivityId, amount: finalAmount)
         }
 
-        print("[UNSHIELD-MIX] ======== unshieldAllWithMix complete ========")
-        print("[UNSHIELD-MIX] Successfully unshielded \(results.count) of \(totalPayments) payments")
+        DebugLogger.log("[UNSHIELD-MIX] ======== unshieldAllWithMix complete ========")
+        DebugLogger.log("[UNSHIELD-MIX] Successfully unshielded \(results.count) of \(totalPayments) payments")
         mixProgress = 1.0
         return results
     }

@@ -2,6 +2,7 @@ import SwiftUI
 import StealthCore
 
 struct PendingPaymentsView: View {
+    @EnvironmentObject var appState: AppState
     @EnvironmentObject var walletViewModel: WalletViewModel
     @EnvironmentObject var meshViewModel: MeshViewModel
 
@@ -44,7 +45,9 @@ struct PendingPaymentsView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     if !walletViewModel.pendingPayments.isEmpty {
                         Button {
-                            // Manual settlement trigger
+                            Task {
+                                await appState.meshNetworkManager.settlePendingPayments()
+                            }
                         } label: {
                             Label("Settle Now", systemImage: "arrow.triangle.2.circlepath")
                         }

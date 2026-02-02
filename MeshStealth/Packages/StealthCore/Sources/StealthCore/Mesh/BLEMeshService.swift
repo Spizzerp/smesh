@@ -103,6 +103,13 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
     /// Whether we want the mesh to be active (used for auto-start when BLE ready)
     private var wantsActive = false
 
+    /// Pending write continuation for chunked writes
+    private var pendingWriteContinuation: CheckedContinuation<Void, Error>?
+
+    /// Buffer for reassembling chunked messages from each peer
+    /// Key is peer ID, value is (totalLength, assembledData)
+    private var reassemblyBuffers: [String: (totalLength: Int, data: Data)] = [:]
+
     // MARK: - Initialization
 
     public init(meshNode: MeshNode, messageRelay: MessageRelay) {
@@ -156,7 +163,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
             // Check BOTH managers are ready
             guard self.centralManager.state == .poweredOn,
                   self.peripheralManager.state == .poweredOn else {
-                print("Bluetooth not ready - Central: \(self.centralManager.state.rawValue), Peripheral: \(self.peripheralManager.state.rawValue)")
+                DebugLogger.log("Bluetooth not ready - Central: \(self.centralManager.state.rawValue), Peripheral: \(self.peripheralManager.state.rawValue)")
                 return
             }
 
@@ -199,30 +206,88 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
     public func broadcastMessage(_ message: MeshMessage) async throws {
         let data = try message.serialize()
 
-        // Check size
-        guard data.count <= 4096 else {
-            throw MeshError.payloadTooLarge(size: data.count, max: 4096)
+        // Check size - allow larger messages since we use chunking
+        guard data.count <= 16384 else {
+            throw MeshError.payloadTooLarge(size: data.count, max: 16384)
         }
 
         // Capture values synchronously before async boundary
         let (peripheralsToSend, characteristic, manager) = getPeripheralsForBroadcast()
         let subscriberCount = getSubscribedCentralCount()
 
-        print("[BLE] Broadcasting message type: \(message.type), size: \(data.count) bytes")
-        print("[BLE]   -> To \(peripheralsToSend.count) connected peripherals")
-        print("[BLE]   -> To \(subscriberCount) subscribed centrals")
+        DebugLogger.log("[BLE] Broadcasting message type: \(message.type), size: \(data.count) bytes")
+        DebugLogger.log("[BLE]   -> To \(peripheralsToSend.count) connected peripherals")
+        DebugLogger.log("[BLE]   -> To \(subscriberCount) subscribed centrals")
 
         // Send to all connected peripherals (as central)
         for (peripheral, char) in peripheralsToSend {
-            peripheral.writeValue(data, for: char, type: .withResponse)
+            let maxWriteLength = peripheral.maximumWriteValueLength(for: .withoutResponse)
+            if data.count <= maxWriteLength {
+                // Small message - use fast .withoutResponse
+                peripheral.writeValue(data, for: char, type: .withoutResponse)
+            } else {
+                // Large message - use chunked .withResponse
+                DebugLogger.log("[BLE] Broadcast to \(peripheral.identifier.uuidString.prefix(8))... needs chunking")
+                try await sendChunkedData(data, to: peripheral, characteristic: char)
+            }
         }
 
-        // Send to all subscribed centrals (as peripheral)
-        if let characteristic = characteristic {
-            manager?.updateValue(data, for: characteristic, onSubscribedCentrals: nil)
+        // Send to all subscribed centrals (as peripheral) via notifications
+        // For large messages, we need to chunk notifications too
+        if let characteristic = characteristic, let mgr = manager {
+            if data.count <= 512 {  // Notifications typically limited to ~512 bytes
+                mgr.updateValue(data, for: characteristic, onSubscribedCentrals: nil)
+            } else {
+                // Chunk the notification data
+                try await sendChunkedNotifications(data, characteristic: characteristic, manager: mgr)
+            }
         }
 
         await meshNode.recordMessageSent(bytes: data.count)
+    }
+
+    /// Send chunked notifications to all subscribed centrals
+    private func sendChunkedNotifications(_ data: Data, characteristic: CBMutableCharacteristic, manager: CBPeripheralManager) async throws {
+        let payloadSize = Self.chunkPayloadSize
+        let totalLength = data.count
+
+        var offset = 0
+        var chunkIndex = 0
+        let totalChunks = (data.count + payloadSize - 1) / payloadSize
+
+        DebugLogger.log("[BLE] sendChunkedNotifications: Sending \(totalChunks) chunks to subscribers")
+
+        while offset < data.count {
+            let end = min(offset + payloadSize, data.count)
+            let payload = data[offset..<end]
+
+            // Build chunk with header
+            var chunk = Data(capacity: Self.chunkHeaderSize + payload.count)
+            chunk.append(Self.chunkMagicByte)
+            chunk.append(UInt8((totalLength >> 8) & 0xFF))
+            chunk.append(UInt8(totalLength & 0xFF))
+            chunk.append(UInt8((offset >> 8) & 0xFF))
+            chunk.append(UInt8(offset & 0xFF))
+            chunk.append(contentsOf: payload)
+
+            // Send notification chunk
+            let success = manager.updateValue(chunk, for: characteristic, onSubscribedCentrals: nil)
+            if !success {
+                DebugLogger.log("[BLE] sendChunkedNotifications: Transmit queue full, waiting...")
+                try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+                _ = manager.updateValue(chunk, for: characteristic, onSubscribedCentrals: nil)
+            }
+
+            offset = end
+            chunkIndex += 1
+
+            // Small delay between chunks
+            if offset < data.count {
+                try await Task.sleep(nanoseconds: 10_000_000) // 10ms
+            }
+        }
+
+        DebugLogger.log("[BLE] sendChunkedNotifications: All \(totalChunks) chunks sent")
     }
 
     /// Thread-safe helper to get subscriber count
@@ -247,26 +312,123 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
     }
 
     /// Send a message to a specific peer
+    /// Uses .withResponse writes with chunking to ensure reliable delivery of large messages
     public func sendToPeer(_ message: MeshMessage, peerID: String) async throws {
         let data = try message.serialize()
 
-        // Check size
-        guard data.count <= 4096 else {
-            throw MeshError.payloadTooLarge(size: data.count, max: 4096)
+        DebugLogger.log("[BLE] sendToPeer: type=\(message.type), peerID=\(peerID.prefix(8))..., size=\(data.count) bytes")
+
+        // Check size - chunking protocol uses 2 bytes for length, so max is 65535
+        // But keep a reasonable limit for BLE transfers
+        guard data.count <= 16384 else {
+            throw MeshError.payloadTooLarge(size: data.count, max: 16384)
         }
 
-        // Find the peripheral for this peer
-        let targetPeripheral = getPeripheralForPeer(peerID: peerID)
-
-        guard let (peripheral, characteristic) = targetPeripheral else {
+        // Find the peripheral for this peer (we write to their characteristic as central)
+        guard let (peripheral, characteristic) = getPeripheralForPeer(peerID: peerID) else {
+            DebugLogger.log("[BLE] sendToPeer: Peer not found! Checking state...")
+            printPeerDebugInfo()
             throw MeshError.peerNotFound(peerID)
         }
 
-        // Send to the specific peer
-        peripheral.writeValue(data, for: characteristic, type: .withResponse)
+        // Get maximum write length for this peripheral
+        // For .withResponse, CoreBluetooth handles fragmentation but we need to avoid queue overflow
+        // For .withoutResponse, we need to stay within the limit
+        let maxWriteLength = peripheral.maximumWriteValueLength(for: .withoutResponse)
+        DebugLogger.log("[BLE] sendToPeer: maxWriteLength=\(maxWriteLength), dataSize=\(data.count)")
 
+        if data.count <= maxWriteLength {
+            // Data fits in a single write - use .withoutResponse for speed
+            DebugLogger.log("[BLE] sendToPeer: Single write with .withoutResponse")
+            peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+        } else {
+            // Data needs chunking - use .withResponse for reliability and let CoreBluetooth handle it
+            // But send in smaller chunks to avoid prepare queue overflow
+            DebugLogger.log("[BLE] sendToPeer: Chunked write with .withResponse (data too large for single write)")
+            try await sendChunkedData(data, to: peripheral, characteristic: characteristic)
+        }
+
+        DebugLogger.log("[BLE] sendToPeer: Write dispatched")
         await meshNode.recordMessageSent(bytes: data.count)
     }
+
+    // MARK: - Chunked Message Protocol
+    // Header format: [0xFF (magic)] [totalLen high] [totalLen low] [offset high] [offset low] [data...]
+    // Total header size: 5 bytes
+
+    private static let chunkMagicByte: UInt8 = 0xFF
+    private static let chunkHeaderSize = 5
+    private static let chunkPayloadSize = 507  // 512 - 5 header bytes
+
+    /// Send large data in chunks using .withResponse writes
+    /// Each chunk is sent sequentially to avoid prepare queue overflow
+    private func sendChunkedData(_ data: Data, to peripheral: CBPeripheral, characteristic: CBCharacteristic) async throws {
+        let payloadSize = Self.chunkPayloadSize
+        let totalLength = data.count
+
+        var offset = 0
+        var chunkIndex = 0
+        let totalChunks = (data.count + payloadSize - 1) / payloadSize
+
+        DebugLogger.log("[BLE] sendChunkedData: Sending \(totalChunks) chunks, totalLength=\(totalLength)")
+
+        while offset < data.count {
+            let end = min(offset + payloadSize, data.count)
+            let payload = data[offset..<end]
+
+            // Build chunk with header
+            var chunk = Data(capacity: Self.chunkHeaderSize + payload.count)
+            chunk.append(Self.chunkMagicByte)
+            chunk.append(UInt8((totalLength >> 8) & 0xFF))  // Total length high byte
+            chunk.append(UInt8(totalLength & 0xFF))          // Total length low byte
+            chunk.append(UInt8((offset >> 8) & 0xFF))        // Offset high byte
+            chunk.append(UInt8(offset & 0xFF))               // Offset low byte
+            chunk.append(contentsOf: payload)
+
+            DebugLogger.log("[BLE] sendChunkedData: Chunk \(chunkIndex + 1)/\(totalChunks), offset=\(offset), payloadSize=\(payload.count)")
+
+            // Send chunk with .withResponse and wait for completion
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                bleQueue.async { [weak self] in
+                    guard let self = self else {
+                        continuation.resume(throwing: MeshError.serviceNotReady)
+                        return
+                    }
+
+                    self.lock.lock()
+                    self.pendingWriteContinuation = continuation
+                    self.lock.unlock()
+
+                    peripheral.writeValue(chunk, for: characteristic, type: .withResponse)
+
+                    // Timeout after 5 seconds
+                    self.bleQueue.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                        guard let self = self else { return }
+                        self.lock.lock()
+                        let pending = self.pendingWriteContinuation
+                        self.pendingWriteContinuation = nil
+                        self.lock.unlock()
+
+                        if let pending = pending {
+                            DebugLogger.log("[BLE] sendChunkedData: Chunk \(chunkIndex + 1) timed out")
+                            pending.resume(throwing: MeshError.writeTimeout)
+                        }
+                    }
+                }
+            }
+
+            offset = end
+            chunkIndex += 1
+
+            // Small delay between chunks to let the queue clear
+            if offset < data.count {
+                try await Task.sleep(nanoseconds: 10_000_000) // 10ms
+            }
+        }
+
+        DebugLogger.log("[BLE] sendChunkedData: All \(totalChunks) chunks sent successfully")
+    }
+
 
     /// Thread-safe helper to get a specific peer's peripheral
     private func getPeripheralForPeer(peerID: String) -> (CBPeripheral, CBCharacteristic)? {
@@ -283,6 +445,20 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
         }
 
         return nil
+    }
+
+
+    /// Thread-safe helper to print debug info about connected peers
+    private func printPeerDebugInfo() {
+        lock.lock()
+        let connectedKeys = connectedPeripherals.keys.map { $0.uuidString.prefix(8) }
+        let charKeys = peripheralCharacteristics.keys.map { $0.uuidString.prefix(8) }
+        let subscribedKeys = subscribedCentrals.map { $0.identifier.uuidString.prefix(8) }
+        lock.unlock()
+
+        DebugLogger.log("[BLE]   connectedPeripherals: \(connectedKeys)")
+        DebugLogger.log("[BLE]   peripheralCharacteristics: \(charKeys)")
+        DebugLogger.log("[BLE]   subscribedCentrals: \(subscribedKeys)")
     }
 
     /// Get the current mesh node
@@ -333,7 +509,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
             // End scan phase, start pause
             centralManager.stopScan()
             isInScanPhase = false
-            print("Scan cycle: pausing for \(scanPause)s")
+            DebugLogger.log("Scan cycle: pausing for \(scanPause)s")
 
             // Process any pending connections during the pause
             processPendingConnections()
@@ -357,7 +533,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
                 CBCentralManagerScanOptionAllowDuplicatesKey: false
             ]
         )
-        print("Scan cycle: scanning for \(scanDuration)s")
+        DebugLogger.log("Scan cycle: scanning for \(scanDuration)s")
     }
 
     private func stopScanning() {
@@ -367,7 +543,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
         isInScanPhase = false
 
         centralManager.stopScan()
-        print("Stopped scanning")
+        DebugLogger.log("Stopped scanning", category: "BLE")
     }
 
     private func connectToPeripheral(_ peripheral: CBPeripheral) {
@@ -446,7 +622,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
         // Create service and characteristic
         let characteristic = CBMutableCharacteristic(
             type: messageCharacteristicUUID,
-            properties: [.read, .write, .notify],
+            properties: [.read, .write, .writeWithoutResponse, .notify],
             value: nil,
             permissions: [.readable, .writeable]
         )
@@ -461,7 +637,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
 
         // Add service - advertising will start in didAdd callback
         peripheralManager.add(service)
-        print("Adding mesh service...")
+        DebugLogger.log("Adding mesh service...", category: "BLE")
     }
 
     private func stopAdvertising() {
@@ -473,7 +649,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
         isServiceAdded = false
         lock.unlock()
 
-        print("Stopped advertising")
+        DebugLogger.log("Stopped advertising", category: "BLE")
     }
 
     // MARK: - Message Processing
@@ -487,9 +663,9 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
 
             do {
                 let message = try MeshMessage.deserialize(from: data)
-                print("[BLE] Received message type: \(message.type) from peer: \(peerID.prefix(8))...")
+                DebugLogger.log("[BLE] Received message type: \(message.type) from peer: \(peerID.prefix(8))...")
                 let result = await meshNode.processIncomingMessage(message)
-                print("[BLE] Process result: \(result)")
+                DebugLogger.log("[BLE] Process result: \(result)")
 
                 switch result {
                 case .relay(let forwardMessage):
@@ -506,7 +682,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
                     break
                 }
             } catch {
-                print("[BLE] Failed to process message: \(error)")
+                DebugLogger.log("[BLE] Failed to process message: \(error)")
             }
         }
     }
@@ -645,7 +821,7 @@ extension BLEMeshService: CBCentralManagerDelegate {
 
         // Discover services
         peripheral.discoverServices([serviceUUID])
-        print("Connected to peer: \(peerID)")
+        DebugLogger.log("Connected to peer: \(peerID)")
     }
 
     public func centralManager(
@@ -672,7 +848,7 @@ extension BLEMeshService: CBCentralManagerDelegate {
             await selfRef.refreshPeerLists()
         }
 
-        print("Disconnected from peer: \(peerID)")
+        DebugLogger.log("Disconnected from peer: \(peerID)")
 
         // Attempt reconnection if still active
         if isActive {
@@ -704,7 +880,7 @@ extension BLEMeshService: CBCentralManagerDelegate {
             await selfRef.refreshPeerLists()
         }
 
-        print("Failed to connect to peer: \(peerID), error: \(error?.localizedDescription ?? "unknown")")
+        DebugLogger.log("Failed to connect to peer: \(peerID), error: \(error?.localizedDescription ?? "unknown")")
     }
 }
 
@@ -715,9 +891,20 @@ extension BLEMeshService: CBPeripheralDelegate {
         _ peripheral: CBPeripheral,
         didDiscoverServices error: Error?
     ) {
-        guard let services = peripheral.services else { return }
+        if let error = error {
+            DebugLogger.log("[BLE] Failed to discover services: \(error.localizedDescription)")
+            return
+        }
+
+        guard let services = peripheral.services else {
+            DebugLogger.log("[BLE] No services found for peer: \(peripheral.identifier.uuidString.prefix(8))...")
+            return
+        }
+
+        DebugLogger.log("[BLE] Discovered \(services.count) services for peer: \(peripheral.identifier.uuidString.prefix(8))...")
 
         for service in services where service.uuid == serviceUUID {
+            DebugLogger.log("[BLE] Found mesh service, discovering characteristics...")
             peripheral.discoverCharacteristics([messageCharacteristicUUID], for: service)
         }
     }
@@ -727,15 +914,28 @@ extension BLEMeshService: CBPeripheralDelegate {
         didDiscoverCharacteristicsFor service: CBService,
         error: Error?
     ) {
-        guard let characteristics = service.characteristics else { return }
+        if let error = error {
+            DebugLogger.log("[BLE] Failed to discover characteristics: \(error.localizedDescription)")
+            return
+        }
+
+        guard let characteristics = service.characteristics else {
+            DebugLogger.log("[BLE] No characteristics found for service")
+            return
+        }
+
+        DebugLogger.log("[BLE] Discovered \(characteristics.count) characteristics for peer: \(peripheral.identifier.uuidString.prefix(8))...")
 
         for characteristic in characteristics where characteristic.uuid == messageCharacteristicUUID {
+            DebugLogger.log("[BLE] Found message characteristic, storing for peer: \(peripheral.identifier.uuidString.prefix(8))...")
+
             lock.lock()
             peripheralCharacteristics[peripheral.identifier] = characteristic
             lock.unlock()
 
             // Subscribe to notifications
             peripheral.setNotifyValue(true, for: characteristic)
+            DebugLogger.log("[BLE] Subscribed to notifications for peer: \(peripheral.identifier.uuidString.prefix(8))...")
         }
     }
 
@@ -744,10 +944,18 @@ extension BLEMeshService: CBPeripheralDelegate {
         didUpdateValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
-        guard let data = characteristic.value else { return }
+        guard let data = characteristic.value, !data.isEmpty else { return }
 
         let peerID = peripheral.identifier.uuidString
-        handleReceivedData(data, from: peerID)
+
+        // Check if this is a chunked notification (starts with magic byte)
+        if data[0] == Self.chunkMagicByte && data.count >= Self.chunkHeaderSize {
+            DebugLogger.log("[BLE] Received chunked notification from \(peerID.prefix(8))...")
+            handleChunkedWrite(data: data, from: peerID)
+        } else {
+            // Regular (non-chunked) notification
+            handleReceivedData(data, from: peerID)
+        }
     }
 
     public func peripheral(
@@ -755,9 +963,32 @@ extension BLEMeshService: CBPeripheralDelegate {
         didWriteValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        // Resume pending continuation for chunked writes
+        lock.lock()
+        let continuation = pendingWriteContinuation
+        pendingWriteContinuation = nil
+        lock.unlock()
+
         if let error = error {
-            print("Write failed: \(error.localizedDescription)")
+            DebugLogger.log("[BLE] Write callback - failed: \(error.localizedDescription)")
+            continuation?.resume(throwing: error)
+        } else {
+            DebugLogger.log("[BLE] Write callback - succeeded for peer: \(peripheral.identifier.uuidString.prefix(8))...")
+            continuation?.resume()
         }
+    }
+
+    public func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateNotificationStateFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        if let error = error {
+            DebugLogger.log("[BLE] Notification subscription failed: \(error.localizedDescription)")
+            return
+        }
+
+        DebugLogger.log("[BLE] Notification state updated for peer: \(peripheral.identifier.uuidString.prefix(8))..., isNotifying: \(characteristic.isNotifying)")
     }
 }
 
@@ -778,7 +1009,7 @@ extension BLEMeshService: CBPeripheralManagerDelegate {
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: Error?) {
         if let error = error {
-            print("Failed to add service: \(error.localizedDescription)")
+            DebugLogger.log("Failed to add service: \(error.localizedDescription)")
             return
         }
 
@@ -786,7 +1017,7 @@ extension BLEMeshService: CBPeripheralManagerDelegate {
         isServiceAdded = true
         lock.unlock()
 
-        print("Service added successfully, now advertising...")
+        DebugLogger.log("Service added successfully, now advertising...", category: "BLE")
 
         // NOW start advertising
         peripheral.startAdvertising([
@@ -794,18 +1025,82 @@ extension BLEMeshService: CBPeripheralManagerDelegate {
             CBAdvertisementDataLocalNameKey: "MeshStealth"
         ])
 
-        print("Started advertising mesh service")
+        DebugLogger.log("Started advertising mesh service", category: "BLE")
     }
 
     public func peripheralManager(
         _ peripheral: CBPeripheralManager,
         didReceiveWrite requests: [CBATTRequest]
     ) {
+        DebugLogger.log("[BLE] didReceiveWrite: \(requests.count) requests")
+
         for request in requests {
-            if let data = request.value {
-                handleReceivedData(data, from: request.central.identifier.uuidString)
+            guard let data = request.value, !data.isEmpty else { continue }
+
+            let peerID = request.central.identifier.uuidString
+            DebugLogger.log("[BLE] Request from \(peerID.prefix(8))..., offset: \(request.offset), size: \(data.count)")
+
+            // Check if this is a chunked message (starts with magic byte)
+            if data[0] == Self.chunkMagicByte && data.count >= Self.chunkHeaderSize {
+                handleChunkedWrite(data: data, from: peerID)
+            } else {
+                // Regular (non-chunked) message - process directly
+                DebugLogger.log("[BLE] Received regular write: \(data.count) bytes from central: \(peerID.prefix(8))...")
+                handleReceivedData(data, from: peerID)
             }
+        }
+
+        // Respond to all requests (required for .withResponse writes)
+        for request in requests {
             peripheral.respond(to: request, withResult: .success)
+        }
+    }
+
+    /// Handle a chunk of a chunked message - buffer and reassemble
+    private func handleChunkedWrite(data: Data, from peerID: String) {
+        // Parse header: [magic] [totalLen high] [totalLen low] [offset high] [offset low] [payload...]
+        let totalLength = (Int(data[1]) << 8) | Int(data[2])
+        let chunkOffset = (Int(data[3]) << 8) | Int(data[4])
+        let payload = data.dropFirst(Self.chunkHeaderSize)
+
+        DebugLogger.log("[BLE] Chunk received: totalLen=\(totalLength), offset=\(chunkOffset), payloadSize=\(payload.count)")
+
+        lock.lock()
+
+        // Get or create buffer for this peer
+        var buffer = reassemblyBuffers[peerID]
+
+        if buffer == nil || buffer!.totalLength != totalLength {
+            // Start new reassembly
+            buffer = (totalLength: totalLength, data: Data(count: totalLength))
+            DebugLogger.log("[BLE] Started new reassembly buffer for \(peerID.prefix(8))..., totalLength=\(totalLength)")
+        }
+
+        // Copy payload into buffer at the correct offset
+        let endOffset = min(chunkOffset + payload.count, totalLength)
+        buffer!.data.replaceSubrange(chunkOffset..<endOffset, with: payload.prefix(endOffset - chunkOffset))
+
+        reassemblyBuffers[peerID] = buffer
+
+        // Check if reassembly is complete (we've received up to totalLength)
+        // Note: This simple check assumes chunks arrive in order; for robustness, track received ranges
+        let receivedUpTo = chunkOffset + payload.count
+
+        lock.unlock()
+
+        DebugLogger.log("[BLE] Buffer progress: received up to \(receivedUpTo)/\(totalLength)")
+
+        if receivedUpTo >= totalLength {
+            // Reassembly complete
+            lock.lock()
+            let completeData = reassemblyBuffers[peerID]?.data
+            reassemblyBuffers.removeValue(forKey: peerID)
+            lock.unlock()
+
+            if let data = completeData {
+                DebugLogger.log("[BLE] Reassembly complete: \(data.count) bytes from \(peerID.prefix(8))...")
+                handleReceivedData(data, from: peerID)
+            }
         }
     }
 
@@ -820,7 +1115,7 @@ extension BLEMeshService: CBPeripheralManagerDelegate {
         }
         lock.unlock()
 
-        print("Central subscribed: \(central.identifier)")
+        DebugLogger.log("Central subscribed: \(central.identifier)")
     }
 
     public func peripheralManager(
@@ -832,7 +1127,7 @@ extension BLEMeshService: CBPeripheralManagerDelegate {
         subscribedCentrals.removeAll { $0.identifier == central.identifier }
         lock.unlock()
 
-        print("Central unsubscribed: \(central.identifier)")
+        DebugLogger.log("Central unsubscribed: \(central.identifier)")
     }
 }
 
