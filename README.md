@@ -75,7 +75,7 @@ Interactive radar visualization showing nearby mesh peers with RSSI-based positi
 ### Build
 
 ```bash
-git clone https://github.com/your-org/smesh.git
+git clone https://github.com/Spizzerp/smesh.git
 cd smesh/MeshStealth
 open MeshStealth.xcodeproj
 ```
