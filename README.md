@@ -49,6 +49,8 @@ Optional ML-KEM 768 hybridization provides quantum resistance while maintaining 
 
 ## Demo
 
+[![Watch the demo](https://img.youtube.com/vi/4FPNJmHFm2Y/maxresdefault.jpg)](https://youtu.be/4FPNJmHFm2Y)
+
 ### Peer Discovery Radar
 Interactive radar visualization showing nearby mesh peers with RSSI-based positioning and PQ capability indicators.
 
