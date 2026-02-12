@@ -82,7 +82,7 @@ public struct SodiumWrapper {
     /// - Returns: Tuple of (scalar, publicKey) where publicKey = scalar * G
     public static func generateScalarKeyPair() -> (scalar: Data, publicKey: Data)? {
         // Generate 64 random bytes and reduce to get a properly distributed scalar mod L
-        let randomData = randomBytes(count: 64)
+        guard let randomData = try? randomBytes(count: 64) else { return nil }
 
         var reducedScalar = Bytes(repeating: 0, count: scalarBytes)
         reducedScalar.withUnsafeMutableBufferPointer { resultPtr in
@@ -333,8 +333,12 @@ public struct SodiumWrapper {
     /// Generate cryptographically secure random bytes
     /// - Parameter count: Number of bytes
     /// - Returns: Random data
-    public static func randomBytes(count: Int) -> Data {
-        return Data(sodium.randomBytes.buf(length: count) ?? [])
+    /// - Throws: StealthError.randomGenerationFailed if entropy source fails
+    public static func randomBytes(count: Int) throws -> Data {
+        guard let bytes = sodium.randomBytes.buf(length: count) else {
+            throw StealthError.randomGenerationFailed
+        }
+        return Data(bytes)
     }
 
     // MARK: - Raw Scalar Ed25519 Signing

@@ -390,6 +390,7 @@ public enum StealthError: Error, LocalizedError, Equatable {
     case invalidMLKEMCiphertext
     case mlkemEncapsulationFailed
     case mlkemDecapsulationFailed
+    case randomGenerationFailed
 
     public var errorDescription: String? {
         switch self {
@@ -423,6 +424,8 @@ public enum StealthError: Error, LocalizedError, Equatable {
             return "MLKEM768 encapsulation failed"
         case .mlkemDecapsulationFailed:
             return "MLKEM768 decapsulation failed"
+        case .randomGenerationFailed:
+            return "Failed to generate cryptographically secure random bytes"
         }
     }
 
@@ -441,7 +444,8 @@ public enum StealthError: Error, LocalizedError, Equatable {
              (.invalidMLKEMPrivateKey, .invalidMLKEMPrivateKey),
              (.invalidMLKEMCiphertext, .invalidMLKEMCiphertext),
              (.mlkemEncapsulationFailed, .mlkemEncapsulationFailed),
-             (.mlkemDecapsulationFailed, .mlkemDecapsulationFailed):
+             (.mlkemDecapsulationFailed, .mlkemDecapsulationFailed),
+             (.randomGenerationFailed, .randomGenerationFailed):
             return true
         case (.keychainError(let a), .keychainError(let b)):
             return a == b

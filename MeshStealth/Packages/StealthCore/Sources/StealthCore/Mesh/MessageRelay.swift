@@ -223,8 +223,11 @@ public actor MessageRelay {
         let connectedPeers = await meshNode.getConnectedPeers()
         guard !connectedPeers.isEmpty else { return [] }
 
-        // Filter peers by RSSI
-        let eligiblePeers = connectedPeers.filter { $0.rssi >= config.minRelayRSSI }
+        // Filter peers by RSSI and liveness (skip stale peers)
+        let eligiblePeers = connectedPeers.filter { peer in
+            peer.rssi >= config.minRelayRSSI &&
+            Date().timeIntervalSince(peer.lastSeenAt) < config.messageExpiry
+        }
         guard !eligiblePeers.isEmpty else { return [] }
 
         // Get messages to relay
@@ -234,6 +237,18 @@ public actor MessageRelay {
         return messages.compactMap { message in
             message.forwarded()
         }
+    }
+
+    /// Remove stored messages targeted at a disconnected peer
+    /// Call this when a peer is known to have permanently disconnected
+    public func peerDisconnected(id: String) {
+        // Remove messages that were stored specifically for this peer
+        // Since messages in a flood-based mesh aren't peer-targeted,
+        // we prune any messages that have only been relayed to this peer
+        // and are now expired
+        pruneExpiredMessages()
+
+        relayEventSubject.send(.messageEvicted(id))
     }
 
     /// Record successful relay

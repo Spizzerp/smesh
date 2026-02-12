@@ -368,7 +368,7 @@ final class CryptoRoundtripTests: XCTestCase {
         let keyPair = try StealthKeyPair.generate()
 
         // Generate a random "hash" value and reduce it to a valid scalar
-        let rawHash = SodiumWrapper.randomBytes(count: 32)
+        let rawHash = try SodiumWrapper.randomBytes(count: 32)
         guard let hash = SodiumWrapper.scalarReduce32(rawHash) else {
             XCTFail("Failed to reduce hash")
             return
@@ -414,7 +414,7 @@ final class CryptoRoundtripTests: XCTestCase {
     }
 
     func testScalarMultBaseWorks() throws {
-        let scalar = SodiumWrapper.randomBytes(count: 32)
+        let scalar = try SodiumWrapper.randomBytes(count: 32)
 
         guard let point = SodiumWrapper.scalarMultBase(scalar) else {
             XCTFail("Scalar mult failed")

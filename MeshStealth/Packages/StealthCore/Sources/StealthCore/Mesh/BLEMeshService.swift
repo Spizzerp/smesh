@@ -88,6 +88,12 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
     /// Last connection attempt timestamp for each peer (for throttling)
     private var lastConnectionAttempt: [UUID: Date] = [:]
 
+    /// Reconnection attempt count per peer (for exponential backoff)
+    private var reconnectAttempts: [UUID: Int] = [:]
+
+    /// Maximum reconnection attempts before giving up
+    private static let maxReconnectAttempts = 5
+
     /// Pending connection peripherals (discovered but not yet connected)
     private var pendingConnections: [UUID: CBPeripheral] = [:]
 
@@ -607,6 +613,7 @@ public class BLEMeshService: NSObject, ObservableObject, @unchecked Sendable {
         pendingConnections.removeAll()
         lastConnectionAttempt.removeAll()
         lastDiscoveryTime.removeAll()
+        reconnectAttempts.removeAll()
         lock.unlock()
 
         for peripheral in peripherals {
@@ -807,6 +814,8 @@ extension BLEMeshService: CBCentralManagerDelegate {
         // Move from pending to connected
         pendingConnections.removeValue(forKey: peripheralID)
         connectedPeripherals[peripheralID] = peripheral
+        // Reset reconnect counter on successful connection
+        reconnectAttempts.removeValue(forKey: peripheralID)
         lock.unlock()
 
         let meshNode = self.meshNode
@@ -850,9 +859,26 @@ extension BLEMeshService: CBCentralManagerDelegate {
 
         DebugLogger.log("Disconnected from peer: \(peerID)")
 
-        // Attempt reconnection if still active
+        // Attempt reconnection with exponential backoff if still active
         if isActive {
-            bleQueue.asyncAfter(deadline: .now() + 2) { [weak self] in
+            lock.lock()
+            let attempts = reconnectAttempts[peripheralID, default: 0]
+            lock.unlock()
+
+            guard attempts < Self.maxReconnectAttempts else {
+                DebugLogger.log("[BLE] Max reconnect attempts (\(Self.maxReconnectAttempts)) reached for peer: \(peerID.prefix(8))..., giving up")
+                return
+            }
+
+            // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+            let delay = 2.0 * pow(2.0, Double(attempts))
+            DebugLogger.log("[BLE] Scheduling reconnect attempt \(attempts + 1)/\(Self.maxReconnectAttempts) for peer \(peerID.prefix(8))... in \(delay)s")
+
+            lock.lock()
+            reconnectAttempts[peripheralID] = attempts + 1
+            lock.unlock()
+
+            bleQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.connectToPeripheral(peripheral)
             }
         }

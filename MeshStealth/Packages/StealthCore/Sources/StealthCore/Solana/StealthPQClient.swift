@@ -266,13 +266,12 @@ public actor StealthPQClient {
     }
 
     /// Check if a point is off the ed25519 curve (valid PDA)
+    /// PDAs must NOT be valid ed25519 public keys to prevent address collision attacks
     /// - Parameter data: 32-byte point
-    /// - Returns: True if off curve
+    /// - Returns: True if off curve (not a valid ed25519 point)
     private static func isOffCurve(_ data: Data) -> Bool {
-        // Simple check: PDAs should not be valid curve points
-        // In production, this should use proper curve validation
-        // For now, we'll accept all derived addresses
-        return true
+        guard data.count == 32 else { return false }
+        return !SodiumWrapper.isValidPoint(data)
     }
 }
 

@@ -22,12 +22,17 @@ public actor ShadowWireProvider: PrivacyProtocol {
     public let displayName: String = "ShadowWire"
 
     public var isAvailable: Bool {
-        get async { isInitialized && webViewBridge != nil }
+        get async { isInitialized && webViewBridge != nil && isSDKBundled }
     }
 
-    /// Whether running in simulation mode (no merchant key = simulated transactions)
+    /// Whether the SDK JS bundle is included in the app bundle
+    public var isSDKBundled: Bool {
+        Bundle.module.url(forResource: "shadowwire-bundle", withExtension: "js") != nil
+    }
+
+    /// Whether running in simulation mode (no merchant key or no SDK bundle = simulated transactions)
     public var isSimulationMode: Bool {
-        get async { config.merchantKey == nil }
+        get async { config.merchantKey == nil || !isSDKBundled }
     }
 
     // MARK: - Private Properties

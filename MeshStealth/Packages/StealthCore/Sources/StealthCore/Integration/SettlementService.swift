@@ -548,7 +548,7 @@ public class SettlementService: ObservableObject {
     // MARK: - Rent Reclamation
 
     /// Reclaim rent from CiphertextAccount PDAs after settlement
-    /// Note: This is a stub - rent reclamation requires the on-chain Stealth-PQ program
+    /// Requires the Stealth-PQ Anchor program to be deployed on-chain
     public func reclaimRent(for payment: PendingPayment) async throws -> String {
         guard payment.status == .settled else {
             throw SettlementError.paymentNotSettled
@@ -559,16 +559,77 @@ public class SettlementService: ObservableObject {
             throw SettlementError.noRentToReclaim
         }
 
-        // TODO: Implement actual rent reclamation when Stealth-PQ program is deployed
-        // This requires:
-        // 1. Deriving the CiphertextAccount PDA
-        // 2. Checking if PDA still exists
-        // 3. Building and signing reclaim_rent instruction
-        // 4. Submitting transaction
+        // 1. Derive spending key and create wallet
+        let spendingKey = try walletManager.deriveSpendingKey(for: payment)
+        let stealthWallet = try SolanaWallet(stealthScalar: spendingKey)
+        let signerPubkey = await stealthWallet.publicKeyData
 
-        throw SettlementError.notImplemented(
-            "Rent reclamation requires Stealth-PQ program deployment"
+        // 2. Derive the CiphertextAccount PDA
+        let (pdaAddress, _) = try StealthPQClient.deriveCiphertextPDA(
+            stealthPubkey: signerPubkey,
+            programId: STEALTH_PQ_PROGRAM_ID
         )
+
+        // 3. Verify the PDA account still exists on-chain (balance > 0 means it exists)
+        let pdaBalance = try await rpcClient.getBalance(address: pdaAddress)
+        guard pdaBalance > 0 else {
+            throw SettlementError.pdaNotFound
+        }
+
+        // 4. Build reclaim_rent instruction data (Anchor discriminator only)
+        let instructionData = StealthPQClient.buildReclaimRentData()
+
+        // 5. Build transaction message
+        //    Accounts: [stealthSigner (signer, writable), ciphertextPDA (writable), programId]
+        guard let programIdBytes = Data(base58Decoding: STEALTH_PQ_PROGRAM_ID),
+              let pdaPubkey = Data(base58Decoding: pdaAddress) else {
+            throw SettlementError.transactionFailed("Invalid program ID or PDA address encoding")
+        }
+
+        let blockhash = try await rpcClient.getRecentBlockhash()
+        guard let blockhashData = Data(base58Decoding: blockhash), blockhashData.count == 32 else {
+            throw SettlementError.transactionFailed("Invalid blockhash")
+        }
+
+        // Account keys: [signer (writable), PDA (writable), program (readonly)]
+        let accountKeys = [signerPubkey, pdaPubkey, programIdBytes]
+
+        let header = SolanaTransaction.MessageHeader(
+            numRequiredSignatures: 1,
+            numReadonlySignedAccounts: 0,
+            numReadonlyUnsignedAccounts: 1  // program ID is readonly
+        )
+
+        let instruction = SolanaTransaction.CompiledInstruction(
+            programIdIndex: 2,       // program ID at index 2
+            accountIndices: [0, 1],  // signer, PDA
+            data: instructionData
+        )
+
+        let message = SolanaTransaction.Message(
+            header: header,
+            accountKeys: accountKeys,
+            recentBlockhash: blockhashData,
+            instructions: [instruction]
+        )
+
+        // 6. Sign and submit
+        let messageBytes = message.serialize()
+        let signature = try await stealthWallet.sign(messageBytes)
+
+        let signedTx = try SolanaTransaction.buildSignedTransaction(
+            message: message,
+            signature: signature
+        )
+
+        let txSignature = try await rpcClient.sendTransaction(signedTx)
+        try await rpcClient.waitForConfirmation(
+            signature: txSignature,
+            timeout: config.transactionTimeout
+        )
+
+        DebugLogger.log("[SETTLE] Rent reclaimed from PDA \(pdaAddress): \(txSignature)")
+        return txSignature
     }
 }
 

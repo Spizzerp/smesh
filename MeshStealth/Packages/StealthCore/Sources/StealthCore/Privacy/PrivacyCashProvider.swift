@@ -26,12 +26,17 @@ public actor PrivacyCashProvider: PrivacyProtocol {
     public let displayName: String = "Privacy Cash"
 
     public var isAvailable: Bool {
-        get async { isInitialized && jsBridge != nil }
+        get async { isInitialized && jsBridge != nil && isSDKBundled }
     }
 
-    /// Privacy Cash doesn't require API keys - always runs in live mode
+    /// Whether the SDK JS bundle is included in the app bundle
+    public var isSDKBundled: Bool {
+        Bundle.module.url(forResource: "privacycash-bundle", withExtension: "js") != nil
+    }
+
+    /// Privacy Cash runs in simulation mode when the SDK bundle isn't shipped
     public var isSimulationMode: Bool {
-        get async { false }
+        get async { !isSDKBundled }
     }
 
     // MARK: - Private Properties
